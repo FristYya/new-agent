@@ -3789,9 +3789,19 @@
     }
 
     async function createConversation() {
-      const conversation = await api("/api/conversations", { method: "POST", body: JSON.stringify({ title: "新会话" }) });
+      // api 封装负责发送 JSON 请求，并在非 2xx 响应时抛出异常。
+      const conversation = await api("/api/conversations", {
+        method: "POST",
+        body: JSON.stringify({ title: "新会话" }),
+      });
+
+      // 后续 /chat 请求必须携带这个 ID，后端才能复用正确的 Pi Session。
       app.currentConversationId = conversation.id;
+
+      // 重新读取全局状态，让左侧会话列表立即出现新会话。
       await loadState();
+
+      // 渲染空会话并切换到聊天界面，用户随后即可输入第一条消息。
       renderConversation(conversation);
     }
 
@@ -3871,53 +3881,67 @@
     }
 
     function parseSse(buffer, onEvent) {
+      // SSE 使用空行分隔事件，即两个连续换行：\n\n。
+      // 注意：这里绝对不能写成 split("")，否则会按单个字符拆分。
       const parts = buffer.split("\n\n");
+
+      // 最后一段可能只是半个事件，必须保留并和下一次网络数据拼接。
       const rest = parts.pop() ?? "";
+
       for (const part of parts) {
+        // 一个事件内部使用单换行分隔 event、data 等字段。
         const lines = part.split("\n");
         const eventLine = lines.find((line) => line.startsWith("event: "));
         const dataLines = lines.filter((line) => line.startsWith("data: "));
+
+        // 不完整或不符合本课程约定的事件直接跳过，避免 JSON.parse 无意义报错。
         if (!eventLine || dataLines.length === 0) continue;
-        const rawData = dataLines.map((line) => line.slice(6)).join("\n");
-        onEvent(eventLine.slice(7), JSON.parse(rawData));
+
+        // 去掉 "event: " 前缀，得到 text、status、done 等事件名。
+        const eventName = eventLine.slice(7);
+
+        // SSE 允许存在多个 data 行；去掉前缀后再用换行合并。
+        const jsonText = dataLines.map((line) => line.slice(6)).join("\n");
+
+        // 服务端约定 data 始终是 JSON；解析后交给统一事件处理器。
+        onEvent(eventName, JSON.parse(jsonText));
       }
+
+      // 调用方把残留数据保存到 buffer，等待下一次 reader.read()。
       return rest;
     }
 
-    function handleEvent(type, data) {
-      if (type === "text") {
-        if (!assistantBubble) assistantBubble = addMessage("assistant");
-        setBubbleContent(assistantBubble, (assistantBubble.dataset.raw || "") + data.delta);
-      } else if (type === "text_full") {
-        if (!assistantBubble) assistantBubble = addMessage("assistant");
-        if (!(assistantBubble.dataset.raw || "").trim()) setBubbleContent(assistantBubble, data.text);
-      } else if (type === "conversation") {
-        app.currentConversationId = data.id;
-        loadState().catch(console.error);
-      } else if (type === "tool_start") {
-        upsertTool(data, "running");
-      } else if (type === "tool_update") {
-        upsertTool(data, "running");
-      } else if (type === "tool_end") {
-        upsertTool(data, data.isError ? "error" : "done");
-      } else if (type === "status") {
-        statePill.textContent = data.label;
-      } else if (type === "run") {
-        activeRunId = data.id;
-      } else if (type === "approval_required") {
-        addApprovalCard(data);
-      } else if (type === "structured_result") {
-        addStructuredResult(data);
-      } else if (type === "error") {
-        addMessage("assistant", `执行失败：${data.message}`);
-      } else if (type === "done") {
-        statePill.textContent = "空闲";
-        sendBtn.disabled = false;
-        stopBtn.disabled = true;
-        aborter = null;
-        activeRunId = null;
-      }
+  // 职责：把稳定的 SSE 事件映射为页面状态和 DOM 更新。
+  function handleEvent(type, data) {
+    if (type === "text") {
+      // 第一个文本增量到达时才创建助手气泡，避免提前显示空白消息。
+      if (!assistantBubble) assistantBubble = addMessage("assistant");
+
+      // dataset.raw 保存未渲染的完整 Markdown；每次在旧文本后追加 delta。
+      const oldText = assistantBubble.dataset.raw || "";
+      setBubbleContent(assistantBubble, oldText + data.delta);
+    } else if (type === "conversation") {
+      // 用服务端确认的会话 ID 同步页面，并异步刷新左侧历史列表。
+      app.currentConversationId = data.id;
+      loadState().catch(console.error);
+    } else if (type === "status") {
+      // 将“思考中”“空闲”等运行状态显示在页面状态栏。
+      statePill.textContent = data.label;
+    } else if (type === "run") {
+      // 保存 runId，停止按钮会用它调用取消接口。
+      activeRunId = data.id;
+    } else if (type === "error") {
+      // 把服务端错误显示成助手消息，避免错误只留在控制台。
+      addMessage("assistant", "执行失败：" + data.message);
+    } else if (type === "done") {
+      // 一轮生成结束：恢复输入能力并清理仅属于本轮的状态。
+      statePill.textContent = "空闲";
+      sendBtn.disabled = false;
+      stopBtn.disabled = true;
+      aborter = null;
+      activeRunId = null;
     }
+  }
 
     function createIdempotencyKey() {
       if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -3926,56 +3950,70 @@
       return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
 
-    async function sendTask(retryOfRunId = null) {
-      const retryRun = retryOfRunId
-        ? (app.observability?.runs || []).find((item) => item.id === retryOfRunId)
-        : null;
-      const message = retryRun ? (retryRun.input || retryRun.prompt || "重新执行任务") : input.value.trim();
+    // 职责：提交用户消息，并持续消费后端返回的 SSE 字节流。
+    async function sendTask() {
+      // 去掉首尾空格；空消息或已有请求运行时不重复发送。
+      const message = input.value.trim();
       if (!message || aborter) return;
-      if (retryRun?.conversationId) app.currentConversationId = retryRun.conversationId;
-      if (!app.currentConversationId) {
-        await createConversation();
-      }
-      addMessage("user", retryRun ? `重新执行：${message}` : message);
-      if (!retryRun) input.value = "";
+
+      // 第一次发送前创建应用会话；后续追问复用同一个 conversationId。
+      if (!app.currentConversationId) await createConversation();
+
+      // 先做乐观 UI 更新，让用户立即看到自己刚发送的消息。
+      addMessage("user", message);
+      input.value = "";
       assistantBubble = null;
-      statePill.textContent = "执行中";
+
+      // 运行期间禁用发送、启用停止，并为 fetch 创建取消控制器。
       sendBtn.disabled = true;
       stopBtn.disabled = false;
       aborter = new AbortController();
-      activeRunId = null;
+
       try {
-        const idempotencyKey = createIdempotencyKey();
-        const res = await fetch("/chat", {
+        const response = await fetch("/chat", {
           method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message,
             conversationId: app.currentConversationId,
-            retryOfRunId: retryRun?.id,
           }),
+          // 停止按钮调用 abort() 后，正在进行的 fetch 会立刻抛出 AbortError。
           signal: aborter.signal,
         });
-        if (!res.ok || !res.body) throw new Error((await res.json()).error || "请求失败");
-        const reader = res.body.getReader();
+
+        // 非成功响应通常是参数、会话或模型初始化错误。
+        if (!response.ok || !response.body) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: "请求失败" }));
+          throw new Error(error.error || "请求失败");
+        }
+
+        // response.body 是字节流；Reader 逐块读取，Decoder 转成 UTF-8 字符串。
+        const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+
         while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          const result = await reader.read();
+          if (result.done) break;
+
+          // stream: true 会保留跨数据块的不完整 UTF-8 字符，防止中文乱码。
+          buffer += decoder.decode(result.value, { stream: true });
+
+          // parseSse 处理完整事件，并返回尚未接收完整的尾部数据。
           buffer = parseSse(buffer, handleEvent);
         }
-      } catch (err) {
-        if (err.name !== "AbortError") addMessage("assistant", `执行失败：${err.message}`);
+      } catch (error) {
+        // 用户主动停止产生的 AbortError 不需要显示成执行失败。
+        if (error.name !== "AbortError") {
+          addMessage("assistant", "执行失败：" + error.message);
+        }
       } finally {
-        statePill.textContent = "空闲";
+        // 无论成功、失败还是取消，都恢复页面输入状态。
         sendBtn.disabled = false;
         stopBtn.disabled = true;
         aborter = null;
-        activeRunId = null;
-        loadObservability().catch(console.error);
       }
     }
 
