@@ -1,0 +1,4389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>New-Agent · 工作台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef3f7;
+      --panel: #f7fafc;
+      --card: #ffffff;
+      --line: #d8e1e8;
+      --line-strong: #bfccd6;
+      --text: #17212b;
+      --muted: #667786;
+      --soft: #91a0ad;
+      --ink: #111923;
+      --accent: #53657a;
+      --accent-strong: #405066;
+      --accent-soft: #e2e9ef;
+      --accent-warm: #b98245;
+      --ok: #4f8465;
+      --warn: #a87438;
+      --danger: #a65a55;
+      --shadow: 0 1px 2px rgb(20 32 45 / 5%), 0 12px 24px rgb(20 32 45 / 7%);
+      --page-start: #ffffff;
+      --sidebar-bg: #f2f7fa;
+      --topbar-bg: #ffffff;
+      --plain-control: #ffffff;
+      --nav-hover: #e8eff4;
+      --nav-active: #dfe8ee;
+      --nav-active-border: #bfccd6;
+      --chip-bg: #e8eff4;
+      --soft-surface: #f2f6f9;
+      --field-bg: #f7fafc;
+      --danger-line: #e5b9b4;
+      --danger-bg: #fff8f5;
+      --code-bg: #101820;
+      --code-fg: #eef6fb;
+      --thinking-line: #e4c693;
+      --thinking-bg: #fff6e6;
+      --thinking-fg: #755323;
+      --primary-text: #ffffff;
+      font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+    }
+
+    body[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #050505;
+      --panel: #0b0b0c;
+      --card: #151516;
+      --line: #2b2b2d;
+      --line-strong: #3b3b3e;
+      --text: #eeeeee;
+      --muted: #b8b8bc;
+      --soft: #85858b;
+      --ink: #ffffff;
+      --accent: #f2f2f2;
+      --accent-strong: #ffffff;
+      --accent-soft: #242426;
+      --accent-warm: #d0a15f;
+      --ok: #8abf9c;
+      --warn: #d5ad75;
+      --danger: #df8a85;
+      --shadow: 0 1px 2px rgb(0 0 0 / 24%), 0 18px 34px rgb(0 0 0 / 28%);
+      --page-start: #000000;
+      --sidebar-bg: #080809;
+      --topbar-bg: #0a0a0b;
+      --plain-control: #18181a;
+      --nav-hover: #1a1a1c;
+      --nav-active: #222225;
+      --nav-active-border: #46464a;
+      --chip-bg: #202023;
+      --soft-surface: #1e1e20;
+      --field-bg: #1a1a1c;
+      --danger-line: #6e3e3b;
+      --danger-bg: #241817;
+      --code-bg: #000000;
+      --code-fg: #f4f4f5;
+      --thinking-line: #6d5a3a;
+      --thinking-bg: #201b13;
+      --thinking-fg: #e2c58d;
+      --primary-text: #111111;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      color: var(--text);
+      background: linear-gradient(180deg, var(--page-start) 0%, var(--bg) 100%);
+      overflow: hidden;
+    }
+    button, textarea, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .48; }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 196px minmax(0, 1fr) 300px;
+      overflow: hidden;
+    }
+    body.eval-workspace .app { grid-template-columns: 196px minmax(0, 1fr); }
+    body.eval-workspace .right-panel { display: none; }
+    body.locked .app {
+      filter: blur(8px);
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .auth-screen[hidden] { display: none; }
+    .auth-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      background:
+        radial-gradient(circle at 22% 24%, rgb(80 98 128 / 28%), transparent 34%),
+        radial-gradient(circle at 76% 72%, rgb(117 92 58 / 18%), transparent 32%),
+        linear-gradient(135deg, #080a0f 0%, #111722 50%, #07080b 100%);
+      color: #f5f7fb;
+    }
+    .auth-shell {
+      width: min(860px, 100%);
+      min-height: 420px;
+      border: 1px solid rgb(255 255 255 / 12%);
+      border-radius: 18px;
+      background: #0d1016;
+      box-shadow: 0 28px 90px rgb(0 0 0 / 38%);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      overflow: hidden;
+    }
+    .auth-brand {
+      position: relative;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px;
+      background:
+        linear-gradient(90deg, rgb(255 255 255 / 7%) 1px, transparent 1px),
+        linear-gradient(180deg, rgb(255 255 255 / 7%) 1px, transparent 1px),
+        linear-gradient(145deg, #111822, #090b10);
+      background-size: 34px 34px, 34px 34px, auto;
+      border-right: 1px solid rgb(255 255 255 / 10%);
+      overflow: hidden;
+    }
+    .auth-brand::before {
+      content: "";
+      position: absolute;
+      width: 360px;
+      height: 360px;
+      border: 1px solid rgb(255 255 255 / 11%);
+      border-radius: 50%;
+      right: -90px;
+      top: -120px;
+    }
+    .auth-brand::after {
+      content: "";
+      position: absolute;
+      width: 220px;
+      height: 1px;
+      left: 54px;
+      bottom: 64px;
+      background: linear-gradient(90deg, #8bb99c, transparent);
+    }
+    .auth-identity {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 0;
+    }
+    .auth-mark {
+      width: 76px;
+      height: 76px;
+      flex: 0 0 auto;
+      border-radius: 18px;
+      border: 1px solid rgb(255 255 255 / 24%);
+      background: linear-gradient(180deg, #f5f7fb, #cfd8e3);
+      display: grid;
+      place-items: center;
+      color: #26313f;
+      font-size: 24px;
+      font-weight: 850;
+      box-shadow: 0 18px 46px rgb(0 0 0 / 36%);
+    }
+    .auth-brand h1 {
+      margin: 0;
+      color: #f7f9fc;
+      font-size: clamp(38px, 4.8vw, 58px);
+      line-height: 1;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+    .auth-line {
+      display: none;
+      width: min(360px, 62%);
+      height: 1px;
+      background: var(--line-strong);
+      margin-top: 6px;
+    }
+    .auth-panel {
+      display: grid;
+      place-items: center;
+      padding: 42px 36px;
+      background: #f8fafc;
+    }
+    .auth-card {
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      padding: 0;
+    }
+    .auth-card[hidden] { display: none; }
+    .auth-card h2 {
+      margin: 0 0 6px;
+      color: #17212b;
+      font-size: 22px;
+    }
+    .auth-card p {
+      margin: 0 0 24px;
+      color: #6c7a88;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .auth-form {
+      display: grid;
+      gap: 12px;
+    }
+    .auth-form label {
+      color: #627184;
+      font-size: 12px;
+      display: grid;
+      gap: 6px;
+    }
+    .auth-form input {
+      min-height: 42px;
+      border-radius: 8px;
+      background: #eef3fb;
+      color: #17212b;
+      border-color: #d7e0eb;
+    }
+    .auth-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .auth-error {
+      min-height: 20px;
+      color: var(--danger);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .ghost-btn {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #53657a;
+      min-height: 36px;
+      padding: 7px 11px;
+    }
+    .user-chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--plain-control);
+      color: var(--text);
+      padding: 5px 9px;
+      font-size: 12px;
+      white-space: nowrap;
+      max-width: 130px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: var(--sidebar-bg);
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .sidebar > div {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+    }
+
+    .side-section { min-width: 0; padding: 12px 10px; }
+    .side-section.history {
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .side-title {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .nav-list, .history-list { min-width: 0; display: grid; gap: 6px; }
+    .history-list { min-height: 0; overflow-y: auto; overflow-x: hidden; align-content: start; }
+
+    .nav-btn, .history-item {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      border-radius: 6px;
+      text-align: left;
+      min-height: 34px;
+      overflow: hidden;
+      contain: layout paint;
+      transition: background .14s ease, border-color .14s ease;
+    }
+    .history-item { grid-template-columns: 18px minmax(0, 1fr) 24px; align-items: start; }
+    .nav-btn:hover, .history-item:hover { background: var(--nav-hover); border-color: var(--line); }
+    .nav-btn.active, .history-item.active { background: var(--nav-active); border-color: var(--nav-active-border); }
+
+    .nav-ico {
+      width: 20px;
+      height: 20px;
+      border: 1px solid var(--line-strong);
+      border-radius: 5px;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--page-start);
+    }
+    .nav-text { min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .count {
+      min-width: 18px;
+      justify-self: end;
+      border-radius: 999px;
+      color: var(--soft);
+      background: var(--chip-bg);
+      padding: 1px 5px;
+      font-size: 10px;
+      line-height: 1.4;
+      text-align: center;
+    }
+    .history-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .history-actions { display: flex; gap: 7px; }
+    .history-item > span:last-child {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .history-item b {
+      display: block;
+      max-width: 100%;
+      font-size: 12px;
+      font-weight: 650;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .history-item span {
+      display: block;
+      margin-top: 2px;
+      color: var(--soft);
+      font-size: 11px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-delete {
+      width: 22px;
+      height: 22px;
+      min-height: 22px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--soft);
+      display: grid;
+      place-items: center;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity .14s ease, background .14s ease, color .14s ease, border-color .14s ease, transform .14s ease;
+    }
+    .history-item:hover .history-delete,
+    .history-item:focus-within .history-delete,
+    .history-delete:focus-visible {
+      opacity: 1;
+    }
+    .history-delete svg {
+      width: 14px;
+      height: 14px;
+      stroke-width: 2;
+    }
+    .history-delete:hover {
+      background: var(--danger-bg);
+      color: var(--danger);
+      border-color: var(--danger-line);
+      transform: translateY(-1px);
+    }
+    .history-delete:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--danger) 28%, transparent);
+      outline-offset: 2px;
+    }
+
+    .confirm-layer[hidden] { display: none; }
+    .confirm-layer {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: rgb(10 18 28 / 34%);
+      backdrop-filter: blur(8px);
+    }
+    body[data-theme="dark"] .confirm-layer {
+      background: rgb(0 0 0 / 62%);
+    }
+    .confirm-dialog {
+      width: min(480px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+      box-shadow: var(--shadow), 0 24px 60px rgb(18 26 35 / 16%);
+      overflow: hidden;
+    }
+    .confirm-main {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      padding: 20px 20px 14px;
+    }
+    .confirm-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: var(--danger-bg);
+      color: var(--danger);
+      border: 1px solid var(--danger-line);
+    }
+    .confirm-icon svg {
+      width: 21px;
+      height: 21px;
+      stroke-width: 2.2;
+    }
+    .confirm-copy h2 {
+      margin: 0 0 6px;
+      font-size: 17px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+    .confirm-copy p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+    .confirm-preview {
+      margin: 0 20px 16px 74px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-surface);
+      padding: 11px 12px;
+    }
+    .confirm-preview b {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .confirm-preview span {
+      display: block;
+      color: var(--soft);
+      font-size: 11px;
+    }
+    .confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      background: color-mix(in srgb, var(--soft-surface) 64%, transparent);
+      padding: 12px 16px;
+    }
+    .danger-btn {
+      border: 1px solid var(--danger-line);
+      border-radius: 7px;
+      background: var(--danger);
+      color: #fff;
+      min-height: 30px;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .danger-btn:hover {
+      filter: brightness(.96);
+    }
+    .danger-btn:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--danger) 32%, transparent);
+      outline-offset: 2px;
+    }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 48px 1fr;
+      overflow: hidden;
+    }
+    .topbar {
+      border-bottom: 1px solid var(--line);
+      background: var(--topbar-bg);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 48px;
+      min-height: 0;
+      padding: 6px 14px;
+      overflow: hidden;
+    }
+    .icon-btn, .mini-btn, .primary-btn, .danger-btn {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--plain-control);
+      color: var(--muted);
+      min-height: 30px;
+      padding: 6px 9px;
+      font-size: 12px;
+    }
+    .icon-btn { width: 30px; padding: 0; display: grid; place-items: center; }
+    .menu-btn {
+      width: 36px;
+      min-height: 36px;
+      height: 36px;
+      border-radius: 9px;
+      color: var(--accent-strong);
+      font-size: 18px;
+      background: var(--plain-control);
+      border-color: var(--line-strong);
+    }
+    .primary-btn { background: var(--accent); color: var(--primary-text); border-color: var(--accent); }
+    .primary-btn:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+    .danger-btn { color: var(--danger); border-color: var(--danger-line); background: var(--danger-bg); }
+    .agent-switch {
+      height: 42px;
+      min-width: 320px;
+      max-width: min(440px, 50vw);
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: var(--card);
+      padding: 5px 11px;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) 18px;
+      align-items: center;
+      gap: 10px;
+      box-shadow: var(--shadow);
+    }
+    .agent-logo {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: var(--ink);
+      color: var(--card);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .agent-copy { min-width: 0; }
+    .agent-switch b {
+      display: block;
+      font-size: 15px;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+    .agent-switch span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .agent-caret {
+      justify-self: end;
+      color: var(--soft);
+      font-size: 16px;
+      line-height: 1;
+    }
+    .top-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--plain-control);
+      color: var(--muted);
+      padding: 5px 9px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .content { min-height: 0; overflow: hidden; padding: 14px; }
+    .view { display: none; min-height: 100%; }
+    .view.active { display: block; height: 100%; overflow: auto; }
+    #view-chat.active { height: 100%; overflow: hidden; }
+
+    .chat-view {
+      height: 100%;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+    .chat-scroll {
+      min-height: 0;
+      overflow-y: auto;
+      padding-bottom: 10px;
+    }
+    .welcome { display: grid; place-items: center; min-height: 58vh; text-align: center; }
+    .welcome-inner { width: min(520px, 92%); }
+    .spark {
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      margin: 0 auto 12px;
+      display: grid;
+      place-items: center;
+      background: var(--plain-control);
+      color: var(--accent);
+    }
+    .welcome h1 { margin: 0; font-size: clamp(26px, 3vw, 36px); line-height: 1.18; }
+    .welcome p { margin: 8px 0 18px; color: var(--muted); font-size: 13px; }
+    .suggestions { display: grid; gap: 9px; }
+    .suggestion {
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--card);
+      padding: 10px 12px;
+      color: var(--text);
+      text-align: left;
+    }
+    .suggestion:hover { background: var(--field-bg); border-color: var(--nav-active-border); }
+    .messages {
+      display: none;
+      flex-direction: column;
+      gap: 18px;
+      padding: 8px 28px 24px;
+      max-width: 1120px;
+      margin: 0 auto;
+      min-height: 100%;
+    }
+    .messages.has-content { display: flex; }
+    .chat-view.chatting .welcome { display: none; }
+    .message {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) 30px;
+      gap: 10px;
+      align-items: start;
+    }
+    .message.user {
+      width: min(36%, 460px);
+      align-self: flex-end;
+      margin-left: auto;
+    }
+    .message.assistant {
+      width: min(60%, 700px);
+      align-self: flex-start;
+      margin-right: auto;
+    }
+    .avatar {
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--plain-control);
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+      user-select: none;
+      cursor: pointer;
+    }
+    .message.assistant .avatar { grid-column: 1; }
+    .message.user .avatar { grid-column: 3; }
+    .message.assistant .bubble { grid-column: 2; justify-self: start; }
+    .message.user .bubble { grid-column: 2; justify-self: end; }
+    .bubble {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 11px 13px;
+      background: var(--card);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.65;
+      font-size: 14px;
+      max-width: 100%;
+    }
+    .user .bubble { background: var(--accent); color: var(--primary-text); border-color: var(--accent); }
+    .markdown { white-space: normal; }
+    .markdown > :first-child { margin-top: 0; }
+    .markdown > :last-child { margin-bottom: 0; }
+    .markdown h1, .markdown h2, .markdown h3 {
+      margin: 12px 0 8px;
+      line-height: 1.3;
+      color: var(--ink);
+    }
+    .markdown h1 { font-size: 19px; }
+    .markdown h2 { font-size: 17px; }
+    .markdown h3 { font-size: 15px; }
+    .markdown p { margin: 7px 0; }
+    .markdown ul, .markdown ol { margin: 7px 0 7px 20px; padding: 0; }
+    .markdown li { margin: 3px 0; }
+    .markdown code {
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--soft-surface);
+      padding: 1px 5px;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .markdown pre {
+      margin: 9px 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 10px;
+      overflow: auto;
+      white-space: pre;
+    }
+    .markdown pre code {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+    .markdown blockquote {
+      margin: 9px 0;
+      border-left: 3px solid var(--line-strong);
+      padding-left: 10px;
+      color: var(--muted);
+    }
+    .thinking {
+      max-width: 82%;
+      border: 1px solid var(--thinking-line);
+      background: var(--thinking-bg);
+      color: var(--thinking-fg);
+      border-radius: 8px;
+      padding: 9px 11px;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .composer {
+      width: min(640px, calc(100% - 56px));
+      margin: 0 auto;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: var(--shadow);
+      padding: 10px;
+      position: relative;
+      z-index: 2;
+    }
+    .composer textarea {
+      width: 100%;
+      min-height: 46px;
+      max-height: 130px;
+      resize: vertical;
+      border: 0;
+      outline: 0;
+      color: var(--text);
+      background: transparent;
+      line-height: 1.55;
+      padding: 4px 5px;
+    }
+    .composer-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      margin-top: 6px;
+    }
+    .composer-tools {
+      min-width: 0;
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+    }
+    .composer-tools span {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--soft-surface);
+      padding: 3px 7px;
+      white-space: nowrap;
+      line-height: 1.4;
+    }
+    .send-btn {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--accent);
+      border-radius: 7px;
+      background: var(--accent);
+      color: var(--primary-text);
+      font-weight: 800;
+    }
+
+    .page-head {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--card);
+      padding: 16px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .page-head h1 { margin: 0 0 4px; font-size: 18px; }
+    .page-head p { margin: 0; color: var(--muted); font-size: 13px; }
+    .resource-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+    .resource-tab {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--card);
+      color: var(--muted);
+      padding: 7px 11px;
+      font-size: 12px;
+      min-height: 32px;
+    }
+    .resource-tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--primary-text);
+    }
+    .module-tabs {
+      display: flex;
+      gap: 18px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 12px;
+      padding: 0 2px;
+      overflow-x: auto;
+    }
+    .module-tab {
+      position: relative;
+      flex: 0 0 auto;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      min-height: 38px;
+      padding: 0 2px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .module-tab::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -1px;
+      height: 2px;
+      background: transparent;
+    }
+    .module-tab.active { color: var(--text); }
+    .module-tab.active::after { background: var(--accent); }
+    .module-panel[hidden] { display: none !important; }
+    .observe-overview, .eval-case-workspace { display: grid; gap: 12px; min-width: 0; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+    .stat-card, .block, .table-card, .editor {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--card) 94%, transparent);
+      box-shadow: var(--shadow);
+    }
+    .editor.edit-flash {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent), var(--shadow);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .stat-card { padding: 13px 14px; }
+    .stat-card b { display: block; font-size: 20px; }
+    .stat-card span { color: var(--muted); font-size: 12px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 360px; gap: 12px; align-items: start; }
+    .block, .table-card, .editor { padding: 14px; }
+    .block h2, .table-card h2, .editor h2 { margin: 0 0 10px; font-size: 14px; }
+    .muted { color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .kb-search-panel { margin-bottom: 12px; }
+    .kb-search-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .kb-search-results {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .kb-hit {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-surface);
+      padding: 10px;
+    }
+    .kb-hit-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+    .kb-hit b { color: var(--text); }
+    .kb-hit p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .source-panel {
+      display: none;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-surface);
+    }
+    .source-panel.active { display: grid; }
+    .source-panel p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .source-panel input[type="file"] {
+      padding: 7px;
+      background: var(--card);
+    }
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-height: 126px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      align-content: flex-start;
+    }
+    .tag, .badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--soft-surface);
+      color: var(--muted);
+      padding: 4px 8px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: middle; }
+    th { color: var(--muted); font-weight: 700; }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .form-grid { display: grid; gap: 10px; }
+    label, .field-block { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+    input, select, .form-grid textarea {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--card);
+      color: var(--text);
+      padding: 8px 9px;
+      outline: none;
+      width: 100%;
+    }
+    .form-grid textarea { min-height: 88px; resize: vertical; }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    .form-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+    .check-group {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .check-pill {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--field-bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 8px;
+      font-size: 12px;
+    }
+    .check-pill input {
+      width: auto;
+      margin: 0;
+      accent-color: var(--accent);
+    }
+    .check-pill span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .observe-dashboard {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+    .observe-detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(360px, .92fr);
+      grid-template-rows: 300px minmax(330px, calc(100vh - 620px));
+      grid-template-areas:
+        "skill tool trace"
+        "runs runs trace";
+      gap: 12px;
+      min-width: 0;
+      align-items: stretch;
+    }
+    .observe-skill { grid-area: skill; }
+    .observe-tool { grid-area: tool; }
+    .observe-runs { grid-area: runs; }
+    .observe-trace { grid-area: trace; }
+    .observe-fixed {
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .observe-trace.observe-fixed {
+      height: 100%;
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+    .observe-run-fixed {
+      height: 100%;
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+    .observe-runs > .observe-toolbar {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) 132px auto auto;
+      align-items: center;
+      min-width: 0;
+    }
+    .observe-runs > .observe-toolbar input,
+    .observe-runs > .observe-toolbar select {
+      min-width: 0;
+    }
+    .observe-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .observe-card {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--card);
+      padding: 12px;
+      min-width: 0;
+      min-height: 80px;
+    }
+    .observe-card b {
+      display: block;
+      font-size: 18px;
+      line-height: 1.2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .observe-card span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .alert-list { display: grid; gap: 7px; margin-bottom: 12px; }
+    .alert-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--danger-line);
+      border-left: 3px solid var(--danger);
+      border-radius: 7px;
+      background: var(--danger-bg);
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    .eval-governance { margin-bottom: 12px; }
+    .eval-trends { margin-bottom: 12px; }
+    .eval-governance-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .compact-form { display: flex; gap: 7px; align-items: end; flex-wrap: wrap; }
+    .compact-form label { flex: 1 1 110px; }
+    .observe-toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .filter-toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) 150px auto;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-surface);
+      padding: 7px;
+    }
+    .filter-control {
+      min-width: 0;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--card);
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding-left: 9px;
+      transition: border-color .16s ease, box-shadow .16s ease;
+    }
+    .filter-control:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
+    }
+    .filter-control input,
+    .filter-control select {
+      min-width: 0;
+      height: 32px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 6px 8px 6px 0;
+      box-shadow: none;
+    }
+    .filter-control input:focus,
+    .filter-control select:focus { border: 0; }
+    .filter-icon {
+      flex: 0 0 auto;
+      width: 16px;
+      color: var(--soft);
+      font-size: 16px;
+      line-height: 1;
+      text-align: center;
+    }
+    .filter-label {
+      flex: 0 0 auto;
+      border-right: 1px solid var(--line);
+      padding-right: 8px;
+      color: var(--soft);
+      font-size: 11px;
+      line-height: 18px;
+    }
+    .filter-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .filter-actions .primary-btn { min-width: 58px; height: 34px; }
+    .filter-reset { width: 34px; height: 34px; min-height: 34px; font-size: 16px; }
+    .eval-case-filters { grid-template-columns: minmax(220px, 1fr) 170px; }
+    .observe-filter.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--primary-text);
+    }
+    .timeline {
+      display: grid;
+      gap: 8px;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+      align-content: start;
+    }
+    .timeline-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 10px 11px;
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      gap: 9px;
+      align-items: start;
+    }
+    .timeline-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      margin-top: 6px;
+      background: var(--muted);
+    }
+    .timeline-item.success .timeline-dot { background: var(--ok); }
+    .timeline-item.succeeded .timeline-dot { background: var(--ok); }
+    .timeline-item.failed .timeline-dot,
+    .timeline-item.timeout .timeline-dot,
+    .timeline-item.aborted .timeline-dot { background: var(--danger); }
+    .timeline-item.canceled .timeline-dot,
+    .timeline-item.timed_out .timeline-dot { background: var(--danger); }
+    .timeline-item.running .timeline-dot { background: var(--warn); }
+    .timeline-main {
+      min-width: 0;
+    }
+    .timeline-main b {
+      display: block;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .timeline-main p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .run-list {
+      display: grid;
+      gap: 8px;
+      min-height: 0;
+      overflow: auto;
+      align-content: start;
+      padding-right: 3px;
+      scrollbar-gutter: stable;
+    }
+    .run-item {
+      position: relative;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--text);
+      padding: 10px;
+      text-align: left;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      cursor: pointer;
+      min-height: 64px;
+      overflow: hidden;
+    }
+    .run-item.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .run-main {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+    }
+    .run-item b {
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .run-meta {
+      color: var(--muted);
+      font-size: 11px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      line-height: 1.45;
+    }
+    .run-flow {
+      position: relative;
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+    }
+    .run-flow-trigger {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-surface);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1;
+    }
+    .run-flow-trigger:hover,
+    .run-flow-trigger:focus-visible {
+      border-color: var(--accent);
+      color: var(--text);
+      outline: none;
+    }
+    .run-flow-portal {
+      position: fixed;
+      z-index: 8;
+      width: min(420px, calc(100vw - 32px));
+      max-height: 320px;
+      overflow: auto;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: 12px;
+      transform-origin: right bottom;
+      transition: opacity .14s ease, transform .14s ease, visibility .14s ease;
+    }
+    .run-flow-portal[hidden] {
+      display: none;
+    }
+    .flow-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .flow-title span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .flow-rail {
+      position: relative;
+      display: grid;
+      gap: 9px;
+      padding-left: 4px;
+    }
+    .flow-rail::before {
+      content: "";
+      position: absolute;
+      left: 8px;
+      top: 9px;
+      bottom: 9px;
+      width: 1px;
+      background: var(--line-strong);
+    }
+    .flow-steps {
+      display: grid;
+      gap: 9px;
+    }
+    .flow-step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .flow-dot {
+      width: 8px;
+      height: 8px;
+      margin-top: 5px;
+      border-radius: 999px;
+      background: var(--muted);
+      box-shadow: 0 0 0 4px var(--panel);
+      z-index: 1;
+    }
+    .flow-step.success .flow-dot { background: var(--ok); }
+    .flow-step.succeeded .flow-dot { background: var(--ok); }
+    .flow-step.failed .flow-dot,
+    .flow-step.timeout .flow-dot,
+    .flow-step.aborted .flow-dot { background: var(--danger); }
+    .flow-step.canceled .flow-dot,
+    .flow-step.timed_out .flow-dot { background: var(--danger); }
+    .flow-step.running .flow-dot { background: var(--warn); }
+    .flow-copy {
+      min-width: 0;
+    }
+    .flow-copy b {
+      display: block;
+      color: var(--text);
+      font-size: 11px;
+      line-height: 1.4;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .flow-copy p {
+      margin: 2px 0 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .flow-time {
+      color: var(--soft);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .mini-table {
+      height: 100%;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .table-scroll {
+      min-height: 0;
+      overflow: auto;
+    }
+    .table-scroll table {
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    .table-scroll thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: color-mix(in srgb, var(--card) 96%, var(--panel));
+      box-shadow: 0 1px 0 var(--line);
+    }
+    .visual-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 1fr 1fr;
+      gap: 12px;
+    }
+    .visual-card {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--card);
+      min-height: 170px;
+      padding: 14px;
+      overflow: hidden;
+    }
+    .visual-card h2 {
+      margin: 0 0 12px;
+      font-size: 14px;
+    }
+    .visual-card svg {
+      width: 100%;
+      height: 120px;
+      display: block;
+    }
+    .chart-muted {
+      fill: var(--soft);
+      color: var(--soft);
+      font-size: 11px;
+    }
+    .chart-strong {
+      fill: var(--text);
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .chart-bar {
+      fill: var(--accent);
+    }
+    .chart-bar-soft {
+      fill: var(--accent-soft);
+      stroke: var(--line);
+    }
+    .chart-ok {
+      stroke: var(--ok);
+    }
+    .chart-warn {
+      stroke: var(--warn);
+    }
+    .chart-track {
+      stroke: var(--line);
+    }
+    .trend-section { display: grid; gap: 8px; min-width: 0; }
+    .trend-section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 12px;
+    }
+    .trend-section-head h2 { margin: 0; font-size: 14px; }
+    .trend-section-head span { color: var(--muted); font-size: 11px; }
+    .trend-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      min-width: 0;
+    }
+    .trend-card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 12px;
+    }
+    .trend-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .trend-card h3 { margin: 0; font-size: 13px; }
+    .chart-legend { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+    .chart-legend span { display: inline-flex; align-items: center; gap: 4px; }
+    .legend-swatch { width: 12px; height: 3px; border-radius: 2px; background: var(--accent); }
+    .legend-swatch.ok { background: var(--ok); }
+    .legend-swatch.warn { background: var(--warn); }
+    .legend-swatch.muted { background: var(--muted); }
+    .trend-card svg { width: 100%; height: 154px; display: block; overflow: visible; }
+    .trend-grid-line { stroke: var(--line); stroke-width: 1; }
+    .trend-axis-label { fill: var(--muted); font-size: 9px; }
+    .trend-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+    .trend-line.ok { stroke: var(--ok); }
+    .trend-line.warn { stroke: var(--warn); }
+    .trend-line.muted { stroke: var(--muted); }
+    .trend-dot { fill: var(--card); stroke: var(--accent); stroke-width: 2; }
+    .trend-dot.ok { stroke: var(--ok); }
+    .trend-dot.warn { stroke: var(--warn); }
+    .trend-dot.muted { stroke: var(--muted); }
+    .trend-bar { fill: var(--accent); }
+    .trend-bar.ok { fill: var(--ok); }
+    .trend-bar.warn { fill: var(--warn); }
+    .trend-bar.muted { fill: var(--muted); }
+    .trend-empty { height: 154px; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+    .observe-trace {
+      min-width: 0;
+    }
+
+    .right-panel {
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+      overflow: auto;
+      padding: 9px;
+    }
+    .tabs { display: flex; align-items: center; justify-content: flex-end; gap: 14px; height: 30px; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+    .tabs b { color: var(--text); border-bottom: 2px solid var(--text); padding-bottom: 7px; }
+    .config-card { border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--card) 92%, transparent); padding: 12px; margin-bottom: 9px; }
+    .config-card h3 { margin: 0 0 10px; font-size: 13px; }
+    .config-card p { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .config-field { background: var(--soft-surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; min-height: 46px; }
+    .config-field span { display: block; color: var(--soft); font-size: 10px; margin-bottom: 3px; }
+    .config-field b { font-size: 12px; overflow-wrap: anywhere; }
+    .tool-log { display: grid; gap: 8px; max-height: 230px; overflow: auto; }
+    .tool-card { border: 1px solid var(--line); border-radius: 7px; background: var(--card); padding: 9px; }
+    .tool-card.running { border-color: var(--warn); }
+    .tool-card.done { border-color: var(--ok); }
+    .tool-card.error { border-color: var(--danger); }
+    .tool-card b { display: block; font-size: 12px; }
+    .tool-card pre { margin: 6px 0 0; max-height: 110px; overflow: auto; color: var(--muted); white-space: pre-wrap; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .approval-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .approval-details { margin: 8px 0 0; color: var(--muted); white-space: pre-wrap; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .structured-meta {
+      margin-top: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .structured-meta summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 700;
+      list-style-position: inside;
+    }
+    .structured-meta[open] summary { color: var(--text); }
+    .structured-meta-body { display: grid; gap: 7px; margin-top: 8px; }
+    .structured-meta-body p { margin: 0; }
+    .eval-layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; align-items: stretch; }
+    .eval-case-list, .eval-case-editor {
+      height: 800px;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .eval-case-list { display: flex; flex-direction: column; }
+    .eval-case-list > .history-head, .eval-case-list > .observe-toolbar { flex: 0 0 auto; }
+    .eval-case-list > .table-scroll { flex: 1 1 auto; overflow: auto; }
+    .eval-case-list table { table-layout: fixed; }
+    .eval-case-list th, .eval-case-list td { padding: 6px; }
+    .eval-case-list th:nth-child(1) { width: 34px; }
+    .eval-case-list th:nth-child(2) { width: 31%; }
+    .eval-case-list th:nth-child(3) { width: 108px; }
+    .eval-case-list th:nth-child(4) { width: 132px; }
+    .eval-case-list th:nth-child(5) { width: 70px; }
+    .eval-case-list th:nth-child(6) { width: 116px; }
+    #evalCaseRows tr { height: 52px; }
+    #evalCaseRows td { overflow: hidden; }
+    #evalCaseRows td:nth-child(2) .muted {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .eval-case-list .row-actions { flex-wrap: nowrap; }
+    .eval-case-editor { display: flex; flex-direction: column; }
+    .eval-case-editor > h2 { flex: 0 0 auto; }
+    .eval-case-editor > #evalCaseForm {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 6px;
+      scrollbar-gutter: stable;
+    }
+    .eval-pagination {
+      flex: 0 0 38px;
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      margin-top: 8px;
+    }
+    .eval-page-actions { display: flex; align-items: center; gap: 6px; }
+    .eval-page-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .eval-history { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+    .eval-run-list { display: grid; gap: 7px; max-height: 360px; overflow: auto; }
+    .eval-run-item { width: 100%; text-align: left; border: 1px solid var(--line); background: transparent; color: var(--text); padding: 9px; cursor: pointer; }
+    .eval-run-item.active { border-color: var(--accent); background: var(--accent-soft); }
+    .eval-run-item b, .eval-run-item span { display: block; }
+    .eval-run-item span { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .eval-case-panel[hidden] { display: none; }
+    .eval-result-list { display: grid; gap: 6px; max-height: 340px; overflow: auto; }
+    .eval-result { border-left: 3px solid var(--ok); border-radius: 6px; padding: 7px 9px; background: var(--soft-surface); }
+    .eval-result.failed { border-color: var(--danger); }
+    .eval-result p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+
+    @media (min-width: 821px) {
+      #view-observability.active,
+      #view-evaluation.active {
+        display: grid;
+        height: 100%;
+        min-height: 0;
+        overflow: hidden;
+        padding-bottom: 0;
+      }
+      #view-observability.active { grid-template-rows: auto minmax(0, 1fr); }
+      #view-evaluation.active { grid-template-rows: auto auto minmax(0, 1fr); }
+
+      #view-observability .module-tabs,
+      #view-evaluation .module-tabs { min-height: 39px; }
+
+      .observe-dashboard {
+        display: block;
+        height: 100%;
+        min-height: 0;
+      }
+      .observe-dashboard > .module-panel {
+        height: 100%;
+        min-height: 0;
+        padding-bottom: 6px;
+      }
+      .observe-overview {
+        grid-template-rows: auto auto auto;
+        overflow: auto;
+        align-content: start;
+      }
+      .observe-overview .visual-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+      .observe-overview .visual-card {
+        height: 182px;
+        min-height: 182px;
+      }
+      .observe-overview .visual-card svg {
+        height: 120px;
+      }
+      [data-module-panel="observability:trends"],
+      [data-module-panel="evaluation:trends"] {
+        grid-template-rows: auto auto;
+        overflow: auto;
+        align-content: start;
+      }
+      [data-module-panel$=":trends"] .trend-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        align-items: start;
+      }
+      [data-module-panel$=":trends"] .trend-card {
+        height: 208px;
+        min-height: 208px;
+      }
+      [data-module-panel$=":trends"] .trend-card svg,
+      [data-module-panel$=":trends"] .trend-empty {
+        height: 154px;
+        min-height: 154px;
+      }
+      [data-module-panel="observability:traces"] { overflow: hidden; }
+      .observe-detail-grid {
+        height: 100%;
+        grid-template-rows: minmax(220px, .82fr) minmax(300px, 1.18fr);
+      }
+
+      #view-evaluation > .module-panel {
+        height: 100%;
+        min-height: 0;
+        overflow: auto;
+      }
+      .eval-case-workspace {
+        grid-template-rows: auto auto auto;
+        overflow: visible;
+      }
+      .eval-case-workspace > .stats,
+      .eval-case-workspace > .eval-governance { margin-bottom: 0; }
+      .eval-layout { height: auto; min-height: 0; }
+      .eval-case-list, .eval-case-editor { height: 800px; }
+      .eval-history {
+        height: 100%;
+        margin-top: 0;
+        min-height: 0;
+        overflow: hidden;
+        align-items: stretch;
+      }
+      .eval-history > .table-card {
+        min-height: 0;
+        overflow: hidden;
+      }
+      .eval-history > .table-card:first-child {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+      .eval-history > .table-card:last-child {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+      .eval-run-list {
+        flex: 1 1 auto;
+        min-height: 0;
+        max-height: none;
+        align-content: start;
+        grid-auto-rows: max-content;
+      }
+      #evalRunDetail {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding-right: 3px;
+        scrollbar-gutter: stable;
+      }
+      #evalRunDetail .eval-result-list { max-height: none; }
+    }
+
+    @media (max-width: 1180px) {
+      .app { grid-template-columns: 176px minmax(0, 1fr); }
+      .right-panel { display: none; }
+      .count { display: none; }
+      .auth-screen { overflow: auto; }
+      .auth-shell { grid-template-columns: 1fr; min-height: 0; }
+      .auth-brand { padding: 32px 24px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .auth-identity { justify-content: center; }
+      .auth-panel { padding: 24px; }
+    }
+    @media (max-width: 820px) {
+      body { overflow: hidden; }
+      .app { height: 100vh; min-height: 0; grid-template-columns: 148px minmax(0, 1fr); }
+      .sidebar { border-right: 1px solid var(--line); border-bottom: 0; overflow: hidden; }
+      .side-section { padding: 10px 8px; }
+      .side-section.history {
+        min-height: 0;
+        overflow: hidden;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .history-list { min-height: 0; overflow-y: auto; }
+      .nav-btn, .history-item { grid-template-columns: 18px minmax(0, 1fr) auto; gap: 6px; padding: 7px 6px; }
+      .history-item { grid-template-columns: 16px minmax(0, 1fr) 22px; }
+      .nav-ico { width: 18px; height: 18px; font-size: 11px; }
+      .nav-text { font-size: 12px; }
+      .history-item b { font-size: 11px; }
+      .history-item span { font-size: 10px; }
+      .topbar { padding: 6px 8px; gap: 8px; height: 48px; }
+      .page-head { flex-direction: column; align-items: stretch; padding: 12px; }
+      .page-head .form-actions { width: 100%; margin-top: 0; }
+      .page-head .form-actions button { flex: 1 1 0; white-space: nowrap; }
+      .icon-btn { width: 28px; min-height: 28px; }
+      .menu-btn { width: 34px; min-height: 34px; height: 34px; border-radius: 9px; font-size: 17px; }
+      .agent-switch { min-width: 0; max-width: none; height: 38px; flex: 1; grid-template-columns: 28px minmax(0, 1fr) 16px; gap: 8px; padding: 4px 9px; border-radius: 10px; }
+      .agent-logo { width: 26px; height: 26px; border-radius: 8px; font-size: 9px; }
+      .agent-switch b { font-size: 13px; }
+      .agent-switch span { margin-top: 2px; font-size: 10px; }
+      .agent-caret { font-size: 15px; }
+      .top-actions { gap: 6px; }
+      .content { padding: 8px; }
+      .chat-view { height: calc(100vh - 64px); }
+      .messages { padding: 6px 8px 14px; }
+      .message { grid-template-columns: 26px minmax(0, 1fr) 26px; gap: 7px; }
+      .message.user { width: min(78%, 360px); margin-left: auto; margin-right: 0; }
+      .message.assistant { width: min(90%, 520px); margin-left: 0; margin-right: auto; }
+      .avatar { width: 24px; height: 24px; border-radius: 7px; font-size: 10px; }
+      .bubble { font-size: 13px; padding: 9px 10px; }
+      .composer { width: 100%; margin-bottom: 0; border-radius: 10px; padding: 8px; }
+      .composer textarea { min-height: 40px; max-height: 96px; }
+      .composer-row { gap: 8px; }
+      .composer-tools { font-size: 11px; }
+      .stats, .grid-2 { grid-template-columns: 1fr; }
+      .observe-detail-grid, .visual-grid, .trend-grid { grid-template-columns: 1fr; }
+      .eval-layout, .eval-history { grid-template-columns: 1fr; }
+      .eval-governance-grid { grid-template-columns: 1fr; }
+      .observe-detail-grid {
+        grid-template-rows: 300px 300px 380px 340px;
+        grid-template-areas: "skill" "tool" "trace" "runs";
+      }
+      .observe-trace.observe-fixed { height: 360px; }
+      .observe-run-fixed { height: 340px; }
+      .observe-runs > .observe-toolbar { grid-template-columns: minmax(0, 1fr) 112px; }
+      .run-filter-toolbar { grid-template-columns: minmax(0, 1fr) 132px auto; }
+      .eval-case-filters { grid-template-columns: minmax(0, 1fr) 150px; }
+      .observe-trace { position: static; }
+      .check-group { grid-template-columns: 1fr; }
+      .table-card { overflow-x: auto; }
+    }
+    @media (max-width: 560px) {
+      .app { grid-template-columns: 124px minmax(0, 1fr); }
+      .count { display: none; }
+      .history-head { gap: 6px; }
+      .history-actions .mini-btn { padding: 5px 6px; }
+      .top-actions { display: none; }
+      .agent-switch { grid-template-columns: 28px minmax(0, 1fr) 16px; }
+      .pill { padding: 5px 7px; }
+    }
+  </style>
+</head>
+<body class="locked">
+  <section class="auth-screen" id="authScreen">
+    <div class="auth-shell">
+      <div class="auth-brand">
+        <div class="auth-identity">
+          <div class="auth-mark">NA</div>
+          <h1>New-Agent</h1>
+        </div>
+      </div>
+      <div class="auth-panel">
+        <form class="auth-card" id="loginForm" autocomplete="off">
+          <h2>登录</h2>
+          <p>请输入账号和密码。</p>
+          <div class="auth-form">
+            <label>用户名<input name="loginUser" autocomplete="off" autocapitalize="off" spellcheck="false" required placeholder="能工智人" /></label>
+            <label>密码<input name="loginPass" type="password" autocomplete="new-password" required placeholder="请输入密码" /></label>
+            <div class="auth-error" id="authError"></div>
+            <div class="auth-actions">
+              <button class="primary-btn" type="submit">登录</button>
+              <button class="ghost-btn" id="showRegisterBtn" type="button">注册</button>
+            </div>
+          </div>
+        </form>
+        <form class="auth-card" id="registerForm" autocomplete="off" hidden>
+          <h2>创建账号</h2>
+          <p>注册成功后将自动登录。</p>
+          <div class="auth-form">
+            <label>用户名<input name="registerUser" autocomplete="username" autocapitalize="off" spellcheck="false" minlength="3" maxlength="64" required placeholder="3–64 位用户名" /></label>
+            <label>显示名称（选填）<input name="registerDisplayName" autocomplete="nickname" maxlength="64" placeholder="默认与用户名相同" /></label>
+            <label>密码<input name="registerPass" type="password" autocomplete="new-password" minlength="8" maxlength="128" required placeholder="至少 8 位" /></label>
+            <label>确认密码<input name="registerPassConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required placeholder="再次输入密码" /></label>
+            <div class="auth-error" id="registerError"></div>
+            <div class="auth-actions">
+              <button class="primary-btn" type="submit">创建并登录</button>
+              <button class="ghost-btn" id="showLoginBtn" type="button">返回登录</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div>
+        <div class="side-section">
+          <p class="side-title">工作区</p>
+          <div class="nav-list">
+            <button class="nav-btn active" data-view="chat"><span class="nav-ico">＋</span><span class="nav-text">新会话</span><span class="count" id="conversationCount">0</span></button>
+            <button class="nav-btn" data-view="agent"><span class="nav-ico">◇</span><span class="nav-text">Agent 管理</span><span class="count" id="agentCount">0</span></button>
+            <button class="nav-btn" data-view="skill"><span class="nav-ico">□</span><span class="nav-text">Skill 管理</span><span class="count" id="skillCount">0</span></button>
+            <button class="nav-btn" data-view="tool"><span class="nav-ico">⌁</span><span class="nav-text">Tool 管理</span><span class="count" id="toolCount">0</span></button>
+            <button class="nav-btn" data-view="knowledge"><span class="nav-ico">▣</span><span class="nav-text">知识库管理</span><span class="count" id="knowledgeCount">0</span></button>
+            <button class="nav-btn" data-view="observability"><span class="nav-ico">◎</span><span class="nav-text">可观测中心</span><span class="count" id="observeCount">0</span></button>
+            <button class="nav-btn" data-view="evaluation"><span class="nav-ico">✓</span><span class="nav-text">评测中心</span><span class="count" id="evalCount">0</span></button>
+          </div>
+        </div>
+        <div class="side-section history">
+          <div class="history-head">
+            <span>历史</span>
+            <span class="history-actions"><button class="mini-btn" id="newConversationBtn">新建</button></span>
+          </div>
+          <div class="history-list" id="historyList"></div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn">☰</button>
+        <div class="agent-switch">
+          <span class="agent-logo">NA</span>
+          <div class="agent-copy"><b id="topAgentName">New-Agent</b><span id="modelLine">local · loading</span></div>
+          <span class="agent-caret">⌄</span>
+        </div>
+        <div class="top-actions">
+          <span class="user-chip" id="currentUserChip">未登录</span>
+          <span class="pill" id="statePill">空闲</span>
+          <button class="mini-btn" id="themeBtn" type="button">深色</button>
+          <button class="icon-btn" id="refreshBtn">↻</button>
+          <button class="mini-btn" id="logoutBtn" type="button">退出</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="view active" id="view-chat">
+          <div class="chat-view" id="chatView">
+            <div class="chat-scroll" id="chatScroll">
+              <div class="welcome" id="welcome">
+                <div class="welcome-inner">
+                  <div class="spark">⌘</div>
+                  <h1>欢迎使用New-Agent</h1>
+                  <p>向 New-Agent 提问，或从下方选择一个任务开始会话。</p>
+                  <div class="suggestions">
+                    <button class="suggestion" data-task="帮我拆解一个代码任务：新增登录表单校验，并给出验收标准。">帮我拆解一个代码任务：新增登录表单校验</button>
+                    <button class="suggestion" data-task="分析示例任务数据，按优先级统计当前任务分布，并指出最需要关注的风险。">分析示例任务数据并总结风险</button>
+                    <button class="suggestion" data-task="帮我整理一个网页信息收集任务：目标是竞品功能对比，需要输出字段和整理框架。">整理网页信息收集任务框架</button>
+                  </div>
+                </div>
+              </div>
+              <div class="messages" id="messages"></div>
+            </div>
+            <div class="composer">
+              <textarea id="input" placeholder="向 New-Agent 提问，或发起一条任务指令..."></textarea>
+              <div class="composer-row">
+                <div class="composer-tools" id="composerTools"></div>
+                <div>
+                  <button class="mini-btn" id="stopBtn" disabled>停止</button>
+                  <button class="send-btn" id="sendBtn">↑</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="view-agent">
+          <div class="page-head">
+            <div><h1>Agent 管理</h1><p>管理真实持久化 Agent 配置。新增、编辑、删除都会写入本地数据文件。</p></div>
+            <button class="primary-btn" id="createAgentBtn">新建 Agent</button>
+          </div>
+          <div class="stats" id="agentStats"></div>
+          <div class="grid-2">
+            <div class="table-card">
+              <h2>Agent 列表</h2>
+              <table><thead><tr><th>名称</th><th>Key</th><th>模型</th><th>状态</th><th>操作</th></tr></thead><tbody id="agentRows"></tbody></table>
+            </div>
+            <div class="editor">
+              <h2 id="agentEditorTitle">编辑 Agent</h2>
+              <form class="form-grid" id="agentForm">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" required /></label>
+                <label>Key<input name="key" required /></label>
+                <label>描述<textarea name="description" required></textarea></label>
+                <label>模型<input name="model" required /></label>
+                <label>状态<select name="status"><option>ACTIVE</option><option>DRAFT</option><option>DISABLED</option></select></label>
+                <label>Max Loop<input name="maxLoop" type="number" min="1" /></label>
+                <label>超时 ms<input name="timeoutMs" type="number" min="1000" /></label>
+                <div class="field-block">启用 Skills<div class="check-group" id="agentSkillOptions"></div></div>
+                <div class="field-block">启用 Tools<div class="check-group" id="agentToolOptions"></div></div>
+                <div class="form-actions"><button class="primary-btn" type="submit">保存 Agent</button><button class="mini-btn" type="button" id="resetAgentForm">清空</button></div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="view-skill">
+          <div class="resource-tabs">
+            <button class="resource-tab active" data-view="skill">Skill 管理</button>
+            <button class="resource-tab" data-view="tool">Tool 管理</button>
+          </div>
+          <div class="page-head">
+            <div><h1>Skill 管理</h1><p>管理可安装的 pi Skill 包。Skill 表示业务能力，Tool 表示底层执行权限。</p></div>
+            <div class="form-actions">
+              <button class="primary-btn" id="uploadSkillBtn" type="button">上传 Skill</button>
+              <input id="skillUploadInput" type="file" accept=".zip,application/zip" hidden />
+            </div>
+          </div>
+          <div class="stats" id="skillStats"></div>
+          <div class="grid-2">
+            <div class="table-card">
+              <h2>Skill 列表</h2>
+              <table><thead><tr><th>名称</th><th>显示名</th><th>来源</th><th>入口</th><th>状态</th><th>操作</th></tr></thead><tbody id="skillRows"></tbody></table>
+            </div>
+            <div class="editor">
+              <h2 id="skillEditorTitle">安装 / 编辑 Skill</h2>
+              <form class="form-grid" id="skillForm">
+                <input type="hidden" name="id" />
+                <label>Skill 名称<input name="name" required placeholder="my-skill" /></label>
+                <label>显示名<input name="label" required /></label>
+                <label>说明<textarea name="description" required></textarea></label>
+                <label>来源<select name="sourceType"><option>builtin</option><option>local</option><option>inline</option></select></label>
+                <label>安装路径<input name="installPath" placeholder="skills/my-skill 或 /abs/path/my-skill" /></label>
+                <label>入口文件<input name="entryFile" placeholder="SKILL.md" /></label>
+                <label>依赖 Tools<input name="toolNames" placeholder="read,bash 或 current_time" /></label>
+                <label>状态<select name="status"><option>PROD</option><option>DRAFT</option><option>DISABLED</option></select></label>
+                <label>版本<input name="version" required /></label>
+                <label>内联 SKILL.md<textarea name="content" placeholder="sourceType=inline 时填写完整 SKILL.md 内容"></textarea></label>
+                <div class="form-actions"><button class="primary-btn" type="submit">保存 Skill</button><button class="mini-btn" type="button" id="resetSkillForm">清空</button></div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="view-tool">
+          <div class="resource-tabs">
+            <button class="resource-tab" data-view="skill">Skill 管理</button>
+            <button class="resource-tab active" data-view="tool">Tool 管理</button>
+          </div>
+          <div class="page-head">
+            <div><h1>Tool 管理</h1><p>管理真实工具配置。Tool 表示 Agent 可调用的底层能力，如文件、命令和搜索。</p></div>
+            <button class="primary-btn" id="createToolBtn">新建 Tool</button>
+          </div>
+          <div class="stats" id="toolStats"></div>
+          <div class="grid-2">
+            <div class="table-card">
+              <h2>Tool 列表</h2>
+              <table><thead><tr><th>名称</th><th>显示名</th><th>分类</th><th>权限</th><th>状态</th><th>操作</th></tr></thead><tbody id="toolRows"></tbody></table>
+            </div>
+            <div class="editor">
+              <h2 id="toolEditorTitle">编辑 Tool</h2>
+              <form class="form-grid" id="toolForm">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" required /></label>
+                <label>显示名<input name="label" required /></label>
+                <label>说明<textarea name="description" required></textarea></label>
+                <label>分类<select name="category"><option>filesystem</option><option>shell</option><option>search</option><option>agent</option></select></label>
+                <label>权限<select name="access"><option>read</option><option>write</option><option>execute</option></select></label>
+                <label>状态<select name="status"><option>ENABLED</option><option>DISABLED</option></select></label>
+                <div class="form-actions"><button class="primary-btn" type="submit">保存 Tool</button><button class="mini-btn" type="button" id="resetToolForm">清空</button></div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="view-knowledge">
+          <div class="page-head">
+            <div><h1>知识库管理</h1><p>管理真实知识库配置、状态和内容。</p></div>
+            <button class="primary-btn" id="createKnowledgeBtn" type="button">新建知识库</button>
+          </div>
+          <div class="stats" id="knowledgeStats"></div>
+          <div class="block kb-search-panel">
+            <h2>检索验证</h2>
+            <div class="kb-search-row">
+              <input id="knowledgeSearchInput" placeholder="输入问题或关键词，验证真实命中内容" />
+              <button class="mini-btn" type="button" id="knowledgeSearchBtn">检索</button>
+            </div>
+            <div class="kb-search-results" id="knowledgeSearchResults"><span class="muted">只检索已发布且有内容的知识库。</span></div>
+          </div>
+          <div class="grid-2">
+            <div class="table-card">
+              <h2>知识库列表</h2>
+              <table><thead><tr><th>名称</th><th>Code</th><th>来源</th><th>内容</th><th>状态</th><th>操作</th></tr></thead><tbody id="knowledgeRows"></tbody></table>
+            </div>
+            <div class="editor">
+              <h2 id="knowledgeEditorTitle">编辑知识库</h2>
+              <form class="form-grid" id="knowledgeForm">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" required /></label>
+                <label>Code<input name="code" required /></label>
+                <label>标签<input name="tags" placeholder="多个标签用英文逗号分隔" /></label>
+                <label>说明<textarea name="description"></textarea></label>
+                <label>来源类型
+                  <select name="sourceType" id="knowledgeSourceType">
+                    <option value="manual">手工录入</option>
+                    <option value="file">文件导入</option>
+                    <option value="url">URL 抓取</option>
+                  </select>
+                </label>
+                <div class="source-panel active" data-source-panel="manual">
+                  <p>manual 表示手工维护知识：在下方内容框直接输入或粘贴知识文本，保存后参与检索。</p>
+                </div>
+                <div class="source-panel" data-source-panel="file">
+                  <p>选择本地文本类文件后导入，支持 txt、md、json、csv、html 等可转成文本的文件。</p>
+                  <input id="knowledgeFileInput" type="file" accept=".txt,.md,.markdown,.json,.csv,.html,.htm,text/*,application/json" />
+                  <button class="mini-btn" type="button" id="importKnowledgeFileBtn">导入文件并创建知识库</button>
+                </div>
+                <div class="source-panel" data-source-panel="url">
+                  <p>输入 http/https 地址后由服务端抓取正文，成功后会创建一条 URL 知识。</p>
+                  <input id="knowledgeUrlInput" placeholder="https://example.com/article" />
+                  <button class="mini-btn" type="button" id="importKnowledgeUrlBtn">抓取 URL 并创建知识库</button>
+                </div>
+                <label>状态<select name="status"><option>PUBLISHED</option><option>DRAFT</option><option>DISABLED</option></select></label>
+                <label data-manual-content-field>内容<textarea name="content" required></textarea></label>
+                <div class="form-actions"><button class="primary-btn" type="submit">保存知识库</button><button class="mini-btn" type="button" id="resetKnowledgeForm">清空</button></div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="view-observability">
+          <div class="module-tabs" data-module-tabs="observability" role="tablist" aria-label="可观测中心视图">
+            <button class="module-tab active" type="button" role="tab" aria-selected="true" data-module-tab="observability:overview">运行概览</button>
+            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="observability:trends">趋势分析</button>
+            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="observability:traces">Trace 明细</button>
+          </div>
+          <div class="observe-dashboard">
+            <section class="module-panel observe-overview" data-module-panel="observability:overview">
+              <div class="visual-grid" id="observeVisuals"></div>
+              <div class="observe-grid" id="observeTelemetry"></div>
+              <div class="alert-list" id="observeAlerts"></div>
+            </section>
+            <section class="module-panel trend-section" data-module-panel="observability:trends" hidden>
+              <div class="trend-section-head"><h2>运行趋势</h2><span>最近 7 个有运行记录的日期</span></div>
+              <div class="trend-grid" id="observeTrends"></div>
+            </section>
+            <section class="module-panel" data-module-panel="observability:traces" hidden>
+              <div class="observe-detail-grid">
+              <div class="table-card mini-table observe-skill">
+                <h2>Skill 调用统计</h2>
+                <div class="table-scroll">
+                  <table><thead><tr><th>Skill</th><th>状态</th><th>调用</th><th>失败</th><th>平均耗时</th></tr></thead><tbody id="observeSkillRows"></tbody></table>
+                </div>
+              </div>
+              <div class="table-card mini-table observe-tool">
+                <h2>Tool 调用统计</h2>
+                <div class="table-scroll">
+                  <table><thead><tr><th>Tool</th><th>状态</th><th>调用</th><th>失败</th><th>平均耗时</th></tr></thead><tbody id="observeToolRows"></tbody></table>
+                </div>
+              </div>
+              <div class="table-card observe-fixed observe-run-fixed observe-runs">
+                <h2>最近运行</h2>
+                <form class="filter-toolbar run-filter-toolbar" id="observeRunSearchForm">
+                  <label class="filter-control filter-search" aria-label="搜索运行记录">
+                    <span class="filter-icon" aria-hidden="true">⌕</span>
+                    <input id="observeRunSearch" placeholder="搜索 Trace、输入或错误" />
+                  </label>
+                  <label class="filter-control filter-select" aria-label="筛选运行状态">
+                    <span class="filter-label">状态</span>
+                    <select id="observeRunStatus"><option value="">全部</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="timed_out">超时</option><option value="canceled">已取消</option></select>
+                  </label>
+                  <div class="filter-actions">
+                    <button class="primary-btn" type="submit">检索</button>
+                    <button class="icon-btn filter-reset" id="resetObserveRunSearch" type="button" title="重置筛选" aria-label="重置筛选">↻</button>
+                  </div>
+                </form>
+                <div class="run-list" id="observeRunList"></div>
+              </div>
+              <div class="table-card observe-trace observe-fixed">
+                <h2>Trace 时间线</h2>
+                <div class="observe-toolbar">
+                  <button class="mini-btn observe-filter active" data-observe-filter="all" type="button">全部</button>
+                  <button class="mini-btn observe-filter" data-observe-filter="skill" type="button">Skill</button>
+                  <button class="mini-btn observe-filter" data-observe-filter="tool" type="button">Tool</button>
+                  <button class="mini-btn observe-filter" data-observe-filter="error" type="button">异常</button>
+                </div>
+                <div class="timeline" id="observeTimeline"></div>
+              </div>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div class="view" id="view-evaluation">
+          <div class="page-head">
+            <div><h1>评测中心</h1><p>管理确定性评测用例、运行回归评测，并用基线识别能力退化。</p></div>
+            <div class="form-actions">
+              <button class="mini-btn" id="newEvalCaseBtn" type="button">新建用例</button>
+              <button class="primary-btn" id="runEvalBtn" type="button">运行评测</button>
+            </div>
+          </div>
+          <div class="module-tabs" data-module-tabs="evaluation" role="tablist" aria-label="评测中心视图">
+            <button class="module-tab active" type="button" role="tab" aria-selected="true" data-module-tab="evaluation:cases">用例管理</button>
+            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:trends">质量趋势</button>
+            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:history">运行历史</button>
+          </div>
+          <section class="module-panel eval-case-workspace" data-module-panel="evaluation:cases">
+            <div class="stats" id="evalStats"></div>
+          <div class="table-card eval-governance">
+            <div class="eval-governance-grid">
+              <div>
+                <h2>数据集</h2>
+                <div class="compact-form">
+                  <label>当前数据集<select id="evalDatasetFilter"></select></label>
+                  <label>新数据集<input id="newEvalDatasetName" placeholder="核心业务回归集" /></label>
+                  <button class="mini-btn" id="createEvalDatasetBtn" type="button">创建</button>
+                </div>
+              </div>
+              <div>
+                <h2>发布门禁</h2>
+                <form class="compact-form" id="evalGateForm">
+                  <label>最低通过率<input name="minPassRate" type="number" min="0" max="100" step="1" /></label>
+                  <label>最大回归数<input name="maxRegressions" type="number" min="0" step="1" /></label>
+                  <button class="mini-btn" type="submit">保存</button>
+                </form>
+              </div>
+              <div>
+                <h2>异步任务</h2>
+                <p class="muted" id="evalJobStatus">暂无运行中的评测任务。</p>
+              </div>
+            </div>
+          </div>
+          <div class="eval-layout">
+            <div class="table-card eval-case-list">
+              <div class="history-head"><h2>评测用例</h2><span class="muted" id="evalSelectionText">未选择时运行全部启用用例</span></div>
+              <div class="filter-toolbar eval-case-filters">
+                <label class="filter-control filter-search" aria-label="搜索评测用例">
+                  <span class="filter-icon" aria-hidden="true">⌕</span>
+                  <input id="evalCaseSearch" placeholder="搜索用例名称或标签" />
+                </label>
+                <label class="filter-control filter-select" aria-label="筛选评测类型">
+                  <span class="filter-label">类型</span>
+                  <select id="evalCaseFilter"><option value="all">全部</option><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option></select>
+                </label>
+              </div>
+              <div class="table-scroll">
+                <table><thead><tr><th></th><th>名称</th><th>类型</th><th>标签</th><th>状态</th><th>操作</th></tr></thead><tbody id="evalCaseRows"></tbody></table>
+              </div>
+              <div class="eval-pagination" id="evalCasePagination"></div>
+            </div>
+            <div class="editor eval-case-editor">
+              <h2 id="evalCaseEditorTitle">新建评测用例</h2>
+              <form class="form-grid" id="evalCaseForm">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" required /></label>
+                <label>说明<textarea name="description"></textarea></label>
+                <label>类型<select name="category" id="evalCategory"><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option></select></label>
+                <label>标签<input name="tags" placeholder="安全,回归" /></label>
+                <label>所属数据集<select name="datasetId" id="evalDatasetId"></select></label>
+                <label>严重级别<select name="severity"><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select></label>
+                <label>权重<input name="weight" type="number" min="0.1" max="100" step="0.1" value="1" /></label>
+                <label>负责人<input name="owner" /></label>
+                <label><input name="enabled" type="checkbox" checked /> 启用</label>
+                <div class="eval-case-panel" data-eval-panel="policy">
+                  <div class="form-grid">
+                    <label>Tool 名称<input name="toolName" placeholder="write" /></label>
+                    <label>Tool 输入 JSON<textarea name="policyInput" placeholder='{"path":"demo.txt"}'></textarea></label>
+                    <label>允许 Tools<input name="allowedTools" placeholder="read,write" /></label>
+                    <label>禁用 Skills<input name="disabledSkills" placeholder="current_time" /></label>
+                    <label>期望放行<select name="expectedAllowed"><option value="false">false</option><option value="true">true</option></select></label>
+                    <label>期望风险<select name="expectedRisk"><option>read</option><option>write</option><option>execute</option><option>destructive</option></select></label>
+                    <label>期望审批<select name="expectedApproval"><option value="false">false</option><option value="true">true</option></select></label>
+                  </div>
+                </div>
+                <div class="eval-case-panel" data-eval-panel="structured_output" hidden>
+                  <div class="form-grid">
+                    <label>模型输出<textarea name="structuredOutput"></textarea></label>
+                    <label>Run 状态<select name="runStatus"><option>succeeded</option><option>failed</option><option>waiting_user</option><option>canceled</option><option>timed_out</option></select></label>
+                    <label>期望模式<select name="expectedMode"><option>validated</option><option>repaired</option><option>fallback</option></select></label>
+                    <label>期望结果状态<select name="expectedStructuredStatus"><option>success</option><option>needs_input</option><option>failed</option></select></label>
+                  </div>
+                </div>
+                <div class="eval-case-panel" data-eval-panel="assertion" hidden>
+                  <div class="form-grid">
+                    <label>实际值 JSON<textarea name="assertionActual" placeholder='{"status":"ok"}'></textarea></label>
+                    <label>断言 JSON<textarea name="assertions" placeholder='[{"name":"包含成功状态","operator":"contains","expected":"ok"}]'></textarea></label>
+                  </div>
+                </div>
+                <div class="eval-case-panel" data-eval-panel="trajectory" hidden>
+                  <div class="form-grid">
+                    <label>实际 Tool 轨迹 JSON<textarea name="actualTools" placeholder='[{"name":"read"},{"name":"write"}]'></textarea></label>
+                    <label>期望轨迹 JSON<textarea name="trajectoryExpected" placeholder='{"sequence":["read","write"],"maxCalls":2}'></textarea></label>
+                  </div>
+                </div>
+                <div class="form-actions"><button class="primary-btn" type="submit">保存用例</button><button class="mini-btn" id="resetEvalCaseBtn" type="button">清空</button></div>
+              </form>
+            </div>
+          </div>
+          </section>
+          <section class="module-panel trend-section eval-trends" data-module-panel="evaluation:trends" hidden>
+            <div class="trend-section-head"><h2>质量趋势</h2><span>最近 10 次评测运行</span></div>
+            <div class="trend-grid" id="evalTrends"></div>
+          </section>
+          <section class="module-panel eval-history" data-module-panel="evaluation:history" hidden>
+            <div class="table-card">
+              <h2>运行历史</h2>
+              <div class="eval-run-list" id="evalRunList"></div>
+            </div>
+            <div class="table-card">
+              <div class="history-head"><h2>运行详情</h2><button class="mini-btn" id="setEvalBaselineBtn" type="button" disabled>设为基线</button></div>
+              <div id="evalRunDetail" class="muted">运行一次评测后查看断言与回归对比。</div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <aside class="right-panel">
+      <div class="tabs"><b>Agent 配置</b><span>Memory</span><span>定时任务</span></div>
+      <section class="config-card"><h3>Agent 默认配置</h3><p id="rightAgentSummary">loading</p><button class="mini-btn" data-jump="agent">管理配置</button></section>
+      <section class="config-card">
+        <h3>基础信息</h3>
+        <div class="config-grid" id="rightInfo"></div>
+      </section>
+      <section class="config-card"><h3>默认 Skills</h3><div class="tag-list" id="rightSkills"></div></section>
+      <section class="config-card"><h3>默认 Tools</h3><div class="tag-list" id="rightTools"></div></section>
+      <section class="config-card"><h3>工具轨迹</h3><div class="tool-log" id="toolLog"></div></section>
+    </aside>
+  </div>
+
+  <div class="run-flow-portal" id="runFlowPortal" hidden></div>
+
+  <div class="confirm-layer" id="deleteConversationModal" hidden>
+    <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteConversationTitle">
+      <div class="confirm-main">
+        <div class="confirm-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M12 9v4" />
+            <path d="M12 17h.01" />
+            <path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+          </svg>
+        </div>
+        <div class="confirm-copy">
+          <h2 id="deleteConversationTitle">删除会话</h2>
+          <p>删除后会从本地历史中移除，正在运行的会话也会停止。</p>
+        </div>
+      </div>
+      <div class="confirm-preview">
+        <b id="deleteConversationName">未选择会话</b>
+        <span id="deleteConversationMeta">本地历史展示设置</span>
+      </div>
+      <div class="confirm-actions">
+        <button class="mini-btn" type="button" id="cancelDeleteConversation">取消</button>
+        <button class="danger-btn" type="button" id="confirmDeleteConversation">删除</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const app = {
+      state: null,
+      observability: null,
+      evaluation: null,
+      selected: { agent: null, skill: null, tool: null, knowledge: null, run: null, evalRun: null },
+      currentConversationId: null,
+      observeFilter: "all",
+      evalCasePage: 1,
+      moduleTabs: { observability: "overview", evaluation: "cases" },
+      user: null,
+    };
+    const evalSelectedCases = new Set();
+    const input = $("#input");
+    const sendBtn = $("#sendBtn");
+    const stopBtn = $("#stopBtn");
+    const messages = $("#messages");
+    const chatView = $("#chatView");
+    const chatScroll = $("#chatScroll");
+    const toolLog = $("#toolLog");
+    const statePill = $("#statePill");
+    const modelLine = $("#modelLine");
+    const runFlowPortal = $("#runFlowPortal");
+    const authScreen = $("#authScreen");
+    const authError = $("#authError");
+    const registerError = $("#registerError");
+    const currentUserChip = $("#currentUserChip");
+    let runFlowHideTimer = null;
+    const themeBtn = $("#themeBtn");
+    const deleteConversationModal = $("#deleteConversationModal");
+    const deleteConversationName = $("#deleteConversationName");
+    const deleteConversationMeta = $("#deleteConversationMeta");
+    const loginForm = $("#loginForm");
+    const registerForm = $("#registerForm");
+    let aborter = null;
+    let activeRunId = null;
+    let assistantBubble = null;
+    let pendingDeleteConversationId = null;
+    const toolCards = new Map();
+    const hiddenConversationIds = new Set(JSON.parse(localStorage.getItem("new-agent-hidden-conversations") || "[]"));
+
+    function applyTheme(theme) {
+      const nextTheme = theme === "dark" ? "dark" : "light";
+      document.body.dataset.theme = nextTheme;
+      themeBtn.textContent = nextTheme === "dark" ? "浅色" : "深色";
+      localStorage.setItem("new-agent-theme", nextTheme);
+    }
+
+    applyTheme(localStorage.getItem("new-agent-theme") || "light");
+
+    function clearVolatileInputs() {
+      input.value = "";
+      loginForm?.reset();
+      registerForm?.reset();
+      authScreen?.querySelectorAll("input").forEach((field) => {
+        field.value = "";
+        field.defaultValue = "";
+      });
+    }
+    clearVolatileInputs();
+    window.addEventListener("pageshow", () => {
+      clearVolatileInputs();
+      setTimeout(clearVolatileInputs, 80);
+      setTimeout(clearVolatileInputs, 250);
+    });
+    window.addEventListener("load", () => {
+      setTimeout(clearVolatileInputs, 80);
+      setTimeout(clearVolatileInputs, 250);
+    });
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        credentials: "include",
+        ...options,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        if (res.status === 401) showLogin();
+        throw new Error(err.error || "请求失败");
+      }
+      return res.json();
+    }
+
+    function showLogin(message = "") {
+      loginForm.hidden = false;
+      registerForm.hidden = true;
+      authError.textContent = message;
+      registerError.textContent = "";
+      authScreen.hidden = false;
+      document.body.classList.add("locked");
+      statePill.textContent = "未登录";
+      currentUserChip.textContent = "未登录";
+      requestAnimationFrame(() => loginForm?.querySelector("input[name='loginUser']")?.focus());
+    }
+
+    function hideLogin(user) {
+      app.user = user;
+      authScreen.hidden = true;
+      document.body.classList.remove("locked");
+      currentUserChip.textContent = user?.displayName || user?.username || "已登录";
+    }
+
+    async function checkAuth() {
+      try {
+        const data = await api("/api/auth/me");
+        hideLogin(data.user);
+        return true;
+      } catch {
+        showLogin();
+        return false;
+      }
+    }
+
+    async function loadState() {
+      app.state = await api("/api/state");
+      renderAll();
+    }
+
+    async function loadObservability() {
+      app.observability = await api("/api/observability");
+      renderObservability();
+    }
+
+    async function searchObservabilityRuns() {
+      const params = new URLSearchParams();
+      const query = $("#observeRunSearch").value.trim();
+      const status = $("#observeRunStatus").value;
+      if (query) params.set("q", query);
+      if (status) params.set("status", status);
+      const result = await api(`/api/observability/runs?${params}`);
+      app.observability.runs = result.runs || [];
+      app.selected.run = app.observability.runs[0]?.id || null;
+      renderObservability();
+    }
+
+    async function loadEvaluation() {
+      app.evaluation = await api("/api/evals");
+      renderEvaluation();
+    }
+
+    async function uploadSkillPackage(file) {
+      if (!file) return;
+      const uploadBtn = $("#uploadSkillBtn");
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = "上传中";
+      try {
+        const res = await fetch("/api/skills/upload", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/zip",
+            "X-File-Name": encodeURIComponent(file.name),
+          },
+          body: file,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.error || "上传失败");
+        }
+        const record = await res.json();
+        await loadState();
+        fillForm($("#skillForm"), record);
+        switchView("skill");
+      } catch (err) {
+        addMessage("assistant", `Skill 上传失败：${err.message}`);
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = "上传 Skill";
+        $("#skillUploadInput").value = "";
+      }
+    }
+
+    function switchView(name) {
+      document.body.classList.toggle("eval-workspace", name === "evaluation");
+      document.querySelectorAll(".nav-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === name));
+      document.querySelectorAll(".resource-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === name));
+      document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
+      $(`#view-${name}`).classList.add("active");
+      if (name === "observability") loadObservability().catch(console.error);
+      if (name === "evaluation") loadEvaluation().catch((error) => {
+        $("#evalRunDetail").innerHTML = `<span class="muted">加载失败：${escapeHtml(error.message)}</span>`;
+      });
+    }
+
+    function setModuleTab(moduleName, tabName) {
+      app.moduleTabs[moduleName] = tabName;
+      const key = `${moduleName}:${tabName}`;
+      document.querySelectorAll(`[data-module-tab^="${moduleName}:"]`).forEach((button) => {
+        const active = button.dataset.moduleTab === key;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", String(active));
+      });
+      document.querySelectorAll(`[data-module-panel^="${moduleName}:"]`).forEach((panel) => {
+        panel.hidden = panel.dataset.modulePanel !== key;
+      });
+      $(`#view-${moduleName === "evaluation" ? "evaluation" : "observability"}`)?.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function formatTime(value) {
+      return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }
+
+    function formatTimeMs(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "-";
+      const pad = (num, size = 2) => String(num).padStart(size, "0");
+      return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+    }
+
+    function stat(title, value) {
+      return `<div class="stat-card"><b>${value}</b><span>${title}</span></div>`;
+    }
+
+    function formatMs(value) {
+      if (value === undefined || value === null || value === "") return "-";
+      const ms = Number(value);
+      if (Number.isNaN(ms)) return "-";
+      if (ms === 0) return "0ms";
+      if (ms < 1000) return `${ms}ms`;
+      return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+    }
+
+    function numericMs(value) {
+      return Number(value || 0);
+    }
+
+    function percentileValue(values, ratio) {
+      if (!values.length) return 0;
+      const sorted = [...values].sort((a, b) => a - b);
+      return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1)] || 0;
+    }
+
+    function compactNumber(value) {
+      const number = Number(value || 0);
+      if (Math.abs(number) >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}m`;
+      if (Math.abs(number) >= 1_000) return `${(number / 1_000).toFixed(1)}k`;
+      return Number.isInteger(number) ? String(number) : number.toFixed(1);
+    }
+
+    function chartGeometry(count) {
+      const left = 38;
+      const right = 342;
+      const top = 18;
+      const bottom = 126;
+      return {
+        left, right, top, bottom,
+        x: (index) => count <= 1 ? (left + right) / 2 : left + (index / (count - 1)) * (right - left),
+        y: (value, min, max) => bottom - ((Number(value) - min) / Math.max(1, max - min)) * (bottom - top),
+      };
+    }
+
+    function chartFrame(labels, min, max, formatter = compactNumber) {
+      const geometry = chartGeometry(labels.length);
+      const middle = min + (max - min) / 2;
+      const labelIndexes = labels.length <= 4 ? labels.map((_, index) => index) : [0, Math.floor((labels.length - 1) / 2), labels.length - 1];
+      return `
+        ${[geometry.top, (geometry.top + geometry.bottom) / 2, geometry.bottom].map((y) => `<line class="trend-grid-line" x1="${geometry.left}" y1="${y}" x2="${geometry.right}" y2="${y}" />`).join("")}
+        <text class="trend-axis-label" x="32" y="${geometry.top + 3}" text-anchor="end">${formatter(max)}</text>
+        <text class="trend-axis-label" x="32" y="${(geometry.top + geometry.bottom) / 2 + 3}" text-anchor="end">${formatter(middle)}</text>
+        <text class="trend-axis-label" x="32" y="${geometry.bottom + 3}" text-anchor="end">${formatter(min)}</text>
+        ${labelIndexes.map((index) => `<text class="trend-axis-label" x="${geometry.x(index)}" y="146" text-anchor="middle">${escapeHtml(labels[index] || "")}</text>`).join("")}
+      `;
+    }
+
+    function chartPolyline(values, min, max, className = "", labels = []) {
+      const geometry = chartGeometry(values.length);
+      const points = values.map((value, index) => `${geometry.x(index)},${geometry.y(value, min, max)}`).join(" ");
+      return `
+        <polyline class="trend-line ${className}" points="${points}" />
+        ${values.map((value, index) => `<circle class="trend-dot ${className}" cx="${geometry.x(index)}" cy="${geometry.y(value, min, max)}" r="3"><title>${escapeHtml(labels[index] || "")}：${value}</title></circle>`).join("")}
+      `;
+    }
+
+    function chartCard(title, legend, body, ariaLabel) {
+      return `<section class="trend-card"><div class="trend-card-head"><h3>${title}</h3><div class="chart-legend">${legend}</div></div>${body ? `<svg viewBox="0 0 360 154" role="img" aria-label="${ariaLabel}">${body}</svg>` : `<div class="trend-empty">暂无足够数据</div>`}</section>`;
+    }
+
+    function renderObservabilityTrends(data) {
+      const grouped = new Map();
+      for (const run of data.runs || []) {
+        const date = new Date(run.startedAt || run.updatedAt);
+        if (Number.isNaN(date.getTime())) continue;
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+        const bucket = grouped.get(key) || { key, label: `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`, runs: [] };
+        bucket.runs.push(run);
+        grouped.set(key, bucket);
+      }
+      const buckets = [...grouped.values()].sort((a, b) => a.key.localeCompare(b.key)).slice(-7);
+      const labels = buckets.map((item) => item.label);
+      const successRates = buckets.map((item) => Math.round(item.runs.filter((run) => run.status === "succeeded").length / item.runs.length * 100));
+      const volumes = buckets.map((item) => item.runs.length);
+      const p50 = buckets.map((item) => percentileValue(item.runs.map((run) => Number(run.durationMs || 0)).filter(Boolean), 0.5));
+      const p95 = buckets.map((item) => percentileValue(item.runs.map((run) => Number(run.durationMs || 0)).filter(Boolean), 0.95));
+      const p99 = buckets.map((item) => percentileValue(item.runs.map((run) => Number(run.durationMs || 0)).filter(Boolean), 0.99));
+      const tokens = buckets.map((item) => item.runs.reduce((sum, run) => sum + Number(run.modelUsage?.totalTokens || 0), 0));
+      const costs = buckets.map((item) => item.runs.reduce((sum, run) => sum + Number(run.modelUsage?.costUsd || 0), 0));
+      const geometry = chartGeometry(buckets.length);
+      const volumeMax = Math.max(...volumes, 1);
+      const latencyMax = Math.max(...p99, 1);
+      const tokenMax = Math.max(...tokens, 1);
+      const costMax = Math.max(...costs, 0.000001);
+      const barWidth = Math.min(24, 250 / Math.max(1, buckets.length));
+      const volumeBars = volumes.map((value, index) => {
+        const height = value / volumeMax * 84;
+        return `<rect class="trend-bar muted" x="${geometry.x(index) - barWidth / 2}" y="${geometry.bottom - height}" width="${barWidth}" height="${height}" rx="3"><title>${labels[index]}：${value} 次运行</title></rect>`;
+      }).join("");
+      const tokenBars = tokens.map((value, index) => {
+        const height = value / tokenMax * 84;
+        return `<rect class="trend-bar" x="${geometry.x(index) - barWidth / 2}" y="${geometry.bottom - height}" width="${barWidth}" height="${height}" rx="3"><title>${labels[index]}：${value} Token</title></rect>`;
+      }).join("");
+      $("#observeTrends").innerHTML = [
+        chartCard("运行量与成功率", `<span><i class="legend-swatch muted"></i>运行量 ${volumes.reduce((sum, value) => sum + value, 0)}</span><span><i class="legend-swatch ok"></i>成功率</span>`, buckets.length ? `${chartFrame(labels, 0, 100, (value) => `${Math.round(value)}%`)}${volumeBars}${chartPolyline(successRates, 0, 100, "ok", labels)}` : "", "运行量与成功率趋势"),
+        chartCard("延迟趋势", `<span><i class="legend-swatch ok"></i>P50</span><span><i class="legend-swatch"></i>P95</span><span><i class="legend-swatch warn"></i>P99</span>`, buckets.length ? `${chartFrame(labels, 0, latencyMax, formatMs)}${chartPolyline(p50, 0, latencyMax, "ok", labels)}${chartPolyline(p95, 0, latencyMax, "", labels)}${chartPolyline(p99, 0, latencyMax, "warn", labels)}` : "", "P50 P95 P99 延迟趋势"),
+        chartCard("Token 与成本", `<span><i class="legend-swatch"></i>Token</span><span><i class="legend-swatch warn"></i>成本 $${costs.reduce((sum, value) => sum + value, 0).toFixed(4)}</span>`, buckets.length ? `${chartFrame(labels, 0, tokenMax)}${tokenBars}${chartPolyline(costs, 0, costMax, "warn", labels)}` : "", "Token 与模型成本趋势"),
+      ].join("");
+    }
+
+    function renderEvaluationTrends(data) {
+      const runs = [...(data.runs || [])].slice(0, 10).reverse();
+      const labels = runs.map((run) => new Date(run.startedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).replace(" ", "\n"));
+      const passRates = runs.map((run) => Math.round(Number(run.summary?.passRate || 0) * 100));
+      const gateRate = Math.round(Number(data.gate?.minPassRate ?? 1) * 100);
+      const regressions = runs.map((run) => Number(run.comparison?.regressions?.length || 0));
+      const improvements = runs.map((run) => Number(run.comparison?.improvements?.length || 0));
+      const geometry = chartGeometry(runs.length);
+      const gateY = geometry.y(gateRate, 0, 100);
+      const changeMax = Math.max(...regressions, ...improvements, 1);
+      const barWidth = Math.min(12, 110 / Math.max(1, runs.length));
+      const changeBars = runs.map((run, index) => {
+        const regressionHeight = regressions[index] / changeMax * 88;
+        const improvementHeight = improvements[index] / changeMax * 88;
+        return `<rect class="trend-bar warn" x="${geometry.x(index) - barWidth - 1}" y="${geometry.bottom - regressionHeight}" width="${barWidth}" height="${regressionHeight}" rx="2"><title>${labels[index]}：回归 ${regressions[index]}</title></rect><rect class="trend-bar ok" x="${geometry.x(index) + 1}" y="${geometry.bottom - improvementHeight}" width="${barWidth}" height="${improvementHeight}" rx="2"><title>${labels[index]}：改善 ${improvements[index]}</title></rect>`;
+      }).join("");
+      const latest = runs[runs.length - 1];
+      const failures = (latest?.categories || []).map((item) => ({ label: evalCategoryLabel(item.category), value: Math.max(0, Number(item.total || 0) - Number(item.passed || 0)) }));
+      const failureMax = Math.max(...failures.map((item) => item.value), 1);
+      const failureRows = failures.map((item, index) => {
+        const y = 24 + index * 29;
+        const width = item.value / failureMax * 210;
+        return `<text class="trend-axis-label" x="8" y="${y + 10}">${escapeHtml(item.label)}</text><rect class="chart-bar-soft" x="100" y="${y}" width="220" height="14" rx="7"></rect><rect class="trend-bar warn" x="100" y="${y}" width="${width}" height="14" rx="7"></rect><text class="trend-axis-label" x="330" y="${y + 10}">${item.value}</text>`;
+      }).join("");
+      $("#evalTrends").innerHTML = [
+        chartCard("通过率与门禁", `<span><i class="legend-swatch ok"></i>通过率</span><span><i class="legend-swatch warn"></i>门禁</span>`, runs.length ? `${chartFrame(labels, 0, 100, (value) => `${Math.round(value)}%`)}<line class="trend-line warn" x1="${geometry.left}" y1="${gateY}" x2="${geometry.right}" y2="${gateY}" stroke-dasharray="5 5" />${chartPolyline(passRates, 0, 100, "ok", labels)}` : "", "评测通过率与发布门禁趋势"),
+        chartCard("回归与改善", `<span><i class="legend-swatch warn"></i>回归</span><span><i class="legend-swatch ok"></i>改善</span>`, runs.length ? `${chartFrame(labels, 0, changeMax)}${changeBars}` : "", "评测回归与改善趋势"),
+        chartCard("最近失败分类", `<span><i class="legend-swatch warn"></i>失败用例</span>`, latest ? failureRows : "", "最近一次评测失败分类"),
+      ].join("");
+    }
+
+    function badge(text) {
+      return `<span class="badge">${text}</span>`;
+    }
+
+    function compactTags(items, limit = 4) {
+      const visible = items.slice(0, limit).map((item) => `<span>${escapeHtml(item)}</span>`);
+      if (items.length > limit) visible.push(`<span>+${items.length - limit}</span>`);
+      return visible.join("");
+    }
+
+    function formatModelName(value) {
+      const [provider, modelName = "loading"] = String(value || "local/loading").split("/");
+      return `${provider} · ${modelName}`;
+    }
+
+    function observeEventOrder(type) {
+      return {
+        run_start: 0,
+        status: 1,
+        skill_start: 2,
+        skill_trace: 3,
+        tool_start: 4,
+        tool_end: 5,
+        skill_end: 6,
+        error: 7,
+        run_end: 8,
+      }[type] ?? 9;
+    }
+
+    function observeEventTitle(event) {
+      if (event.type === "run_start") return "Agent 执行开始";
+      if (event.type === "run_end") return event.status === "failed" ? "Agent 执行失败" : "Agent 执行完成";
+      if (event.type === "skill_start") return `Skill 开始：${event.skillName || event.name}`;
+      if (event.type === "skill_trace") return event.name;
+      if (event.type === "skill_end") return event.status === "failed" ? `Skill 失败：${event.skillName || event.name}` : `Skill 完成：${event.skillName || event.name}`;
+      if (event.type === "tool_start") return `Tool 开始：${event.toolName || event.name}`;
+      if (event.type === "tool_end") return event.status === "failed" ? `Tool 失败：${event.toolName || event.name}` : `Tool 完成：${event.toolName || event.name}`;
+      if (event.type === "error") return "异常事件";
+      return event.skillName ? `Skill：${event.skillName}` : event.name;
+    }
+
+    function renderAll() {
+      const { agents, skills, tools, knowledge, conversations, runtime } = app.state;
+      const visibleConversations = conversations.filter((item) => !hiddenConversationIds.has(item.id));
+      $("#conversationCount").textContent = visibleConversations.length;
+      $("#agentCount").textContent = agents.length;
+      $("#skillCount").textContent = skills.length;
+      $("#toolCount").textContent = tools.length;
+      $("#knowledgeCount").textContent = knowledge.length;
+      $("#observeCount").textContent = app.observability?.overview?.totalRuns ?? (app.state.observability?.runs?.length || 0);
+      $("#evalCount").textContent = app.evaluation?.summary?.totalCases ?? 0;
+      const activeAgent = agents.find((item) => item.status === "ACTIVE") || agents[0];
+      $("#topAgentName").textContent = activeAgent?.name || "New-Agent";
+      modelLine.textContent = formatModelName(runtime.model);
+      statePill.textContent = runtime.busy ? "执行中" : "空闲";
+      $("#composerTools").innerHTML = compactTags(tools.filter((tool) => tool.status === "ENABLED").map((tool) => tool.label), 4);
+
+      if (app.currentConversationId && hiddenConversationIds.has(app.currentConversationId)) {
+        app.currentConversationId = visibleConversations[0]?.id || null;
+      }
+      if (!app.currentConversationId && visibleConversations.length > 0) {
+        app.currentConversationId = visibleConversations[0].id;
+      }
+      $("#historyList").innerHTML = visibleConversations.map((item) => `
+        <div class="history-item ${item.id === app.currentConversationId ? "active" : ""}" data-conversation-id="${item.id}" role="button" tabindex="0">
+          <span class="nav-ico">○</span>
+          <span><b>${escapeHtml(item.title)}</b><span>${formatTime(item.updatedAt)}</span></span>
+          <button class="history-delete" data-delete-conversation="${item.id}" type="button" title="删除会话" aria-label="删除会话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M19 6l-1 14H6L5 6" />
+              <path d="M10 11v5" />
+              <path d="M14 11v5" />
+            </svg>
+          </button>
+        </div>`).join("");
+
+      renderRightPanel(activeAgent, skills, tools, runtime);
+      renderAgents();
+      renderSkills();
+      renderTools();
+      renderKnowledge();
+      renderAgentOptions();
+      if (app.observability) renderObservability();
+      if (app.evaluation) renderEvaluation();
+    }
+
+    function evalCategoryLabel(category) {
+      return { policy: "Tool 策略", structured_output: "结构化输出", assertion: "通用断言", trajectory: "调用轨迹" }[category] || category;
+    }
+
+    function syncEvalCasePanels() {
+      const category = $("#evalCategory").value;
+      document.querySelectorAll("[data-eval-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.evalPanel !== category;
+      });
+    }
+
+    function resetEvalCaseForm() {
+      const form = $("#evalCaseForm");
+      form.reset();
+      form.elements.id.value = "";
+      form.elements.enabled.checked = true;
+      form.elements.policyInput.value = "{}";
+      form.elements.assertionActual.value = "{}";
+      form.elements.assertions.value = "[]";
+      form.elements.actualTools.value = "[]";
+      form.elements.trajectoryExpected.value = "{}";
+      form.elements.weight.value = "1";
+      form.elements.severity.value = "medium";
+      if (app.evaluation?.datasets?.length) form.elements.datasetId.value = $("#evalDatasetFilter").value || app.evaluation.datasets[0].id;
+      $("#evalCaseEditorTitle").textContent = "新建评测用例";
+      syncEvalCasePanels();
+    }
+
+    function fillEvalCaseForm(item) {
+      const form = $("#evalCaseForm");
+      resetEvalCaseForm();
+      form.elements.id.value = item.id;
+      form.elements.name.value = item.name || "";
+      form.elements.description.value = item.description || "";
+      form.elements.category.value = item.category;
+      form.elements.tags.value = (item.tags || []).join(",");
+      form.elements.datasetId.value = item.datasetId || "dataset_default";
+      form.elements.severity.value = item.severity || "medium";
+      form.elements.weight.value = item.weight || 1;
+      form.elements.owner.value = item.owner || "";
+      form.elements.enabled.checked = item.enabled !== false;
+      if (item.category === "policy") {
+        form.elements.toolName.value = item.toolName || "";
+        form.elements.policyInput.value = JSON.stringify(item.input ?? {}, null, 2);
+        form.elements.allowedTools.value = (item.allowedTools || []).join(",");
+        form.elements.disabledSkills.value = (item.disabledSkills || []).join(",");
+        form.elements.expectedAllowed.value = String(Boolean(item.expected?.allowed));
+        form.elements.expectedRisk.value = item.expected?.risk || "read";
+        form.elements.expectedApproval.value = String(Boolean(item.expected?.requiresApproval));
+      } else if (item.category === "structured_output") {
+        form.elements.structuredOutput.value = item.output || "";
+        form.elements.runStatus.value = item.runStatus || "succeeded";
+        form.elements.expectedMode.value = item.expected?.mode || "validated";
+        form.elements.expectedStructuredStatus.value = item.expected?.status || "success";
+      } else if (item.category === "assertion") {
+        form.elements.assertionActual.value = JSON.stringify(item.actual ?? null, null, 2);
+        form.elements.assertions.value = JSON.stringify(item.assertions ?? [], null, 2);
+      } else if (item.category === "trajectory") {
+        form.elements.actualTools.value = JSON.stringify(item.actualTools ?? [], null, 2);
+        form.elements.trajectoryExpected.value = JSON.stringify(item.expected ?? {}, null, 2);
+      }
+      $("#evalCaseEditorTitle").textContent = "编辑评测用例";
+      syncEvalCasePanels();
+      focusEditor(form);
+    }
+
+    function evalCasePayload(form) {
+      const values = formData(form);
+      const common = {
+        name: String(values.name || "").trim(),
+        description: String(values.description || "").trim(),
+        category: values.category,
+        tags: normalizeTags(values.tags),
+        datasetId: values.datasetId,
+        severity: values.severity,
+        weight: Number(values.weight || 1),
+        owner: String(values.owner || "").trim(),
+        enabled: form.elements.enabled.checked,
+      };
+      if (values.category === "policy") {
+        let inputValue;
+        try {
+          inputValue = JSON.parse(String(values.policyInput || "{}"));
+        } catch {
+          throw new Error("Tool 输入必须是合法 JSON");
+        }
+        return {
+          ...common,
+          toolName: String(values.toolName || "").trim(),
+          input: inputValue,
+          allowedTools: normalizeTags(values.allowedTools),
+          disabledSkills: normalizeTags(values.disabledSkills),
+          expected: {
+            allowed: values.expectedAllowed === "true",
+            risk: values.expectedRisk,
+            requiresApproval: values.expectedApproval === "true",
+          },
+        };
+      }
+      if (values.category === "assertion") {
+        try {
+          return {
+            ...common,
+            actual: JSON.parse(String(values.assertionActual || "null")),
+            assertions: JSON.parse(String(values.assertions || "[]")),
+          };
+        } catch {
+          throw new Error("实际值和断言必须是合法 JSON");
+        }
+      }
+      if (values.category === "trajectory") {
+        try {
+          return {
+            ...common,
+            actualTools: JSON.parse(String(values.actualTools || "[]")),
+            expected: JSON.parse(String(values.trajectoryExpected || "{}")),
+          };
+        } catch {
+          throw new Error("实际 Tool 轨迹和期望轨迹必须是合法 JSON");
+        }
+      }
+      return {
+        ...common,
+        output: String(values.structuredOutput || ""),
+        runStatus: values.runStatus,
+        expected: { mode: values.expectedMode, status: values.expectedStructuredStatus },
+      };
+    }
+
+    function renderEvalRunDetail(run) {
+      const detail = $("#evalRunDetail");
+      const baselineButton = $("#setEvalBaselineBtn");
+      if (!run) {
+        baselineButton.disabled = true;
+        detail.innerHTML = `<span class="muted">运行一次评测后查看断言与回归对比。</span>`;
+        return;
+      }
+      const isBaseline = run.id === app.evaluation.baselineRunId;
+      baselineButton.disabled = isBaseline;
+      baselineButton.textContent = isBaseline ? "当前基线" : "设为基线";
+      const names = new Map((run.caseSnapshot || []).map((item) => [item.id, item.name]));
+      const comparison = run.comparison;
+      detail.innerHTML = `
+        <div class="stats">
+          ${stat("通过率", `${Math.round(run.summary.passRate * 100)}%`)}
+          ${stat("通过", `${run.summary.passed}/${run.summary.total}`)}
+          ${stat("失败", run.summary.failed)}
+          ${stat("耗时", formatMs(run.durationMs))}
+        </div>
+        ${comparison ? `<p class="muted">对比基线：通过率 ${comparison.passRateDelta >= 0 ? "+" : ""}${Math.round(comparison.passRateDelta * 100)} 个百分点 · 回归 ${comparison.regressions.length} · 改善 ${comparison.improvements.length}</p>` : `<p class="muted">当前运行尚无基线对比。</p>`}
+        <p class="muted">发布门禁：${run.gate?.passed !== false ? "通过" : `未通过 · ${(run.gate?.reasons || []).map(escapeHtml).join("；")}`}</p>
+        <div class="eval-result-list">
+          ${(run.results || []).map((result) => `
+            <div class="eval-result ${result.passed ? "" : "failed"}">
+              <b>${result.passed ? "通过" : "失败"} · ${escapeHtml(names.get(result.id) || result.id)}</b>
+              ${(result.assertions || []).map((entry) => `<p>${entry.passed ? "通过" : "失败"} ${escapeHtml(entry.name)}：期望 ${escapeHtml(JSON.stringify(entry.expected))}，实际 ${escapeHtml(JSON.stringify(entry.actual))}</p>`).join("")}
+            </div>`).join("")}
+        </div>`;
+    }
+
+    function renderEvaluation() {
+      const data = app.evaluation;
+      if (!data) return;
+      const summary = data.summary || {};
+      const datasets = data.datasets || [];
+      const selectedDataset = $("#evalDatasetFilter").value || datasets[0]?.id || "";
+      const datasetOptions = datasets.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} · v${item.version}</option>`).join("");
+      $("#evalDatasetFilter").innerHTML = datasetOptions;
+      $("#evalDatasetId").innerHTML = datasetOptions;
+      if (datasets.some((item) => item.id === selectedDataset)) $("#evalDatasetFilter").value = selectedDataset;
+      const gate = data.gate || { minPassRate: 1, maxRegressions: 0 };
+      $("#evalGateForm").elements.minPassRate.value = Math.round(gate.minPassRate * 100);
+      $("#evalGateForm").elements.maxRegressions.value = gate.maxRegressions;
+      const latestJob = (data.jobs || [])[0];
+      $("#evalJobStatus").innerHTML = latestJob
+        ? `${escapeHtml(latestJob.name)} · ${escapeHtml(latestJob.status)}${latestJob.error ? ` · ${escapeHtml(latestJob.error)}` : ""}${["queued", "running"].includes(latestJob.status) ? ` <button class="mini-btn" type="button" data-cancel-eval-job="${latestJob.id}">取消</button>` : ""}`
+        : "暂无运行中的评测任务。";
+      $("#evalCount").textContent = summary.totalCases || 0;
+      $("#evalStats").innerHTML = [
+        stat("全部用例", summary.totalCases || 0),
+        stat("已启用", summary.enabledCases || 0),
+        stat("累计运行", summary.totalRuns || 0),
+        stat("最近通过率", `${Math.round((summary.latestPassRate || 0) * 100)}%`),
+      ].join("");
+      renderEvaluationTrends(data);
+      const query = $("#evalCaseSearch").value.trim().toLowerCase();
+      const category = $("#evalCaseFilter").value;
+      const cases = (data.cases || []).filter((item) => {
+        const matchesCategory = category === "all" || item.category === category;
+        const haystack = `${item.name} ${item.description} ${(item.tags || []).join(" ")}`.toLowerCase();
+        return matchesCategory && (!selectedDataset || item.datasetId === selectedDataset) && (!query || haystack.includes(query));
+      });
+      const pageSize = 10;
+      const pageCount = Math.max(1, Math.ceil(cases.length / pageSize));
+      app.evalCasePage = Math.min(Math.max(1, app.evalCasePage), pageCount);
+      const pageStart = (app.evalCasePage - 1) * pageSize;
+      const visibleCases = cases.slice(pageStart, pageStart + pageSize);
+      $("#evalCaseRows").innerHTML = visibleCases.map((item) => `
+        <tr>
+          <td><input type="checkbox" data-eval-select="${item.id}" ${evalSelectedCases.has(item.id) ? "checked" : ""} ${item.enabled ? "" : "disabled"} aria-label="选择 ${escapeHtml(item.name)}" /></td>
+          <td><b>${escapeHtml(item.name)}</b><div class="muted">${escapeHtml(item.description || item.id)}</div></td>
+          <td>${badge(evalCategoryLabel(item.category))}</td>
+          <td>${(item.tags || []).map((tag) => badge(escapeHtml(tag))).join(" ") || "-"}</td>
+          <td>${badge(item.enabled ? "启用" : "停用")}</td>
+          <td><div class="row-actions"><button class="mini-btn" data-edit-eval-case="${item.id}" type="button">编辑</button><button class="danger-btn" data-delete-eval-case="${item.id}" type="button">删除</button></div></td>
+        </tr>`).join("") || `<tr><td colspan="6" class="muted">没有符合条件的评测用例。</td></tr>`;
+      const rangeStart = cases.length ? pageStart + 1 : 0;
+      const rangeEnd = Math.min(pageStart + pageSize, cases.length);
+      $("#evalCasePagination").innerHTML = `
+        <span class="eval-page-status">${rangeStart}-${rangeEnd} / ${cases.length} 条</span>
+        <div class="eval-page-actions">
+          <button class="mini-btn" type="button" data-eval-page="previous" ${app.evalCasePage === 1 ? "disabled" : ""}>上一页</button>
+          <span class="eval-page-status">第 ${app.evalCasePage} / ${pageCount} 页</span>
+          <button class="mini-btn" type="button" data-eval-page="next" ${app.evalCasePage === pageCount ? "disabled" : ""}>下一页</button>
+        </div>`;
+      $("#evalSelectionText").textContent = evalSelectedCases.size ? `已选择 ${evalSelectedCases.size} 条用例` : "未选择时运行全部启用用例";
+      const runs = data.runs || [];
+      if (!app.selected.evalRun && runs.length) app.selected.evalRun = runs[0].id;
+      if (app.selected.evalRun && !runs.some((item) => item.id === app.selected.evalRun)) app.selected.evalRun = runs[0]?.id || null;
+      $("#evalRunList").innerHTML = runs.map((run) => `
+        <button class="eval-run-item ${run.id === app.selected.evalRun ? "active" : ""}" data-select-eval-run="${run.id}" type="button">
+          <b>${escapeHtml(run.name)}${run.id === data.baselineRunId ? " · 基线" : ""}</b>
+          <span>${Math.round(run.summary.passRate * 100)}% 通过 · ${run.summary.failed} 失败 · 门禁${run.gate?.passed !== false ? "通过" : "失败"} · ${formatTime(run.startedAt)}</span>
+        </button>`).join("") || `<div class="muted">暂无运行历史。</div>`;
+      renderEvalRunDetail(runs.find((item) => item.id === app.selected.evalRun));
+    }
+
+    async function runEvaluation() {
+      const button = $("#runEvalBtn");
+      button.disabled = true;
+      button.textContent = "运行中";
+      try {
+        const job = await api("/api/evals/jobs", {
+          method: "POST",
+          body: JSON.stringify({ caseIds: [...evalSelectedCases], datasetId: $("#evalDatasetFilter").value }),
+        });
+        $("#evalJobStatus").textContent = `${job.name} · queued`;
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const current = await api(`/api/evals/jobs/${job.id}`);
+          $("#evalJobStatus").textContent = `${current.name} · ${current.status}${current.error ? ` · ${current.error}` : ""}`;
+          if (current.status === "completed") {
+            app.selected.evalRun = current.runId;
+            await loadEvaluation();
+            return;
+          }
+          if (["failed", "canceled"].includes(current.status)) throw new Error(current.error || "评测任务未完成");
+        }
+        throw new Error("评测任务等待超时，可稍后在任务状态中查看");
+      } catch (error) {
+        $("#evalRunDetail").innerHTML = `<span class="muted">运行失败：${escapeHtml(error.message)}</span>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "运行评测";
+      }
+    }
+
+    async function deleteEvalCase(id) {
+      const item = app.evaluation?.cases?.find((entry) => entry.id === id);
+      if (!item || !confirm(`确认删除评测用例“${item.name}”？`)) return;
+      await api(`/api/evals/cases/${id}`, { method: "DELETE" });
+      evalSelectedCases.delete(id);
+      if ($("#evalCaseForm").elements.id.value === id) resetEvalCaseForm();
+      await loadEvaluation();
+    }
+
+    function renderObservability() {
+      const data = app.observability;
+      if (!data) return;
+      const overview = data.overview || {};
+      const runs = data.runs || [];
+      const measuredSpeedRuns = runs.filter((run) => run.modelUsage?.tokensPerSecond !== undefined);
+      const avgTokensPerSecond = overview.avgTokensPerSecond ?? (measuredSpeedRuns.length
+        ? measuredSpeedRuns.reduce((sum, run) => sum + Number(run.modelUsage.tokensPerSecond || 0), 0) / measuredSpeedRuns.length
+        : 0);
+      const modelRetries = overview.modelRetries ?? runs.reduce((sum, run) => sum + Number(run.modelUsage?.retryCount || 0), 0);
+      $("#observeCount").textContent = overview.totalRuns || 0;
+      renderObserveVisuals(data);
+      renderObservabilityTrends(data);
+      $("#observeTelemetry").innerHTML = [
+        `<div class="observe-card"><b>${Number(overview.inputTokens || 0).toLocaleString()}</b><span>输入 Token</span></div>`,
+        `<div class="observe-card"><b>${Number(overview.outputTokens || 0).toLocaleString()}</b><span>输出 Token</span></div>`,
+        `<div class="observe-card"><b>$${Number(overview.totalCostUsd || 0).toFixed(4)}</b><span>累计模型成本</span></div>`,
+        `<div class="observe-card"><b>${formatMs(overview.avgTtftMs)}</b><span>平均首 Token 延迟 · 活动告警 ${overview.activeAlerts || 0}</span></div>`,
+        `<div class="observe-card"><b>${Number(avgTokensPerSecond).toFixed(1)}</b><span>平均生成速度 · Token/s</span></div>`,
+        `<div class="observe-card"><b>${Number(modelRetries).toLocaleString()}</b><span>模型重试次数</span></div>`,
+      ].join("");
+      const activeAlerts = (data.alerts || []).filter((item) => item.status === "active");
+      $("#observeAlerts").innerHTML = activeAlerts.map((item) => `
+        <div class="alert-item"><span><b>${escapeHtml(item.ruleName)}</b> · ${escapeHtml(item.message)}</span><button class="mini-btn" type="button" data-ack-alert="${item.id}">确认</button></div>
+      `).join("");
+      $("#observeSkillRows").innerHTML = (data.skillStats || []).map((item) => `
+        <tr><td>${escapeHtml(item.label || item.name)}</td><td>${badge(item.status)}</td><td>${item.calls}</td><td>${item.failed}</td><td>${formatMs(item.avgMs)}</td></tr>
+      `).join("") || `<tr><td colspan="5" class="muted">暂无 Skill 调用记录</td></tr>`;
+      $("#observeToolRows").innerHTML = (data.toolStats || []).map((item) => `
+        <tr><td>${escapeHtml(item.label || item.name)}</td><td>${badge(item.status)}</td><td>${item.calls}</td><td>${item.failed}</td><td>${formatMs(item.avgMs)}</td></tr>
+      `).join("") || `<tr><td colspan="5" class="muted">暂无 Tool 调用记录</td></tr>`;
+      if (!app.selected.run && runs.length) app.selected.run = runs[0].id;
+      $("#observeRunList").innerHTML = runs.map((run) => `
+        <div class="run-item ${run.id === app.selected.run ? "active" : ""}" data-select-run="${run.id}" role="button" tabindex="0">
+          <div class="run-main">
+            <b>${escapeHtml(run.prompt || "未命名任务")}</b>
+            <span class="run-meta">
+              <span>${badge(run.status)}</span>
+              <span>${formatMs(run.durationMs)}</span>
+              <span>${formatTime(run.startedAt || run.updatedAt)}</span>
+              <span>Tool ${run.toolCalls || 0}</span>
+              ${run.modelUsage ? `<span>Token ${Number(run.modelUsage.totalTokens || 0).toLocaleString()}</span><span>$${Number(run.modelUsage.costUsd || 0).toFixed(4)}</span><span>TTFT ${formatMs(run.modelUsage.ttftMs)}</span>` : ""}
+              <span>Trace ${escapeHtml(String(run.traceId || run.id).slice(0, 8))}</span>
+              ${["failed", "canceled", "timed_out"].includes(run.status) && run.retryable ? `<button class="mini-btn" type="button" data-retry-run="${run.id}">重试</button>` : ""}
+            </span>
+          </div>
+          <div class="run-flow">
+            <button class="run-flow-trigger" type="button" data-run-flow="${run.id}" aria-label="查看关键流程" title="关键流程">⌁</button>
+          </div>
+        </div>
+      `).join("") || `<div class="muted">暂无运行记录。发送一条任务后会在这里出现 Trace。</div>`;
+      renderTimeline();
+      renderToolTrace();
+    }
+
+    function renderRunFlowPopover(runId) {
+      const run = (app.observability?.runs || []).find((item) => item.id === runId);
+      if (!run) return "";
+      const events = buildRunFlowEvents(run);
+      return `
+        <div class="flow-title">
+          <b>${escapeHtml(run.prompt || "关键流程")}</b>
+          <span>${events.length} 个节点</span>
+        </div>
+        <div class="flow-rail">
+          <div class="flow-steps">
+            ${events.map((event) => `
+              <div class="flow-step ${event.status}">
+                <span class="flow-dot"></span>
+                <div class="flow-copy">
+                  <b>${escapeHtml(event.title)}</b>
+                  <p>${escapeHtml(event.detail)}</p>
+                </div>
+                <span class="flow-time">${escapeHtml(event.time)}</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>`;
+    }
+
+    function showRunFlowPortal(trigger) {
+      clearTimeout(runFlowHideTimer);
+      const runId = trigger.dataset.runFlow;
+      const html = renderRunFlowPopover(runId);
+      if (!html) return;
+      runFlowPortal.innerHTML = html;
+      runFlowPortal.hidden = false;
+      positionRunFlowPortal(trigger);
+    }
+
+    function positionRunFlowPortal(trigger) {
+      if (runFlowPortal.hidden) return;
+      const rect = trigger.getBoundingClientRect();
+      const width = runFlowPortal.offsetWidth || 420;
+      const height = runFlowPortal.offsetHeight || 260;
+      const gap = 10;
+      const preferredLeft = rect.right + gap;
+      const fallbackLeft = rect.left - width - gap;
+      const preferredTop = rect.top - height - gap;
+      const left = preferredLeft + width <= window.innerWidth - 12 ? preferredLeft : Math.max(12, fallbackLeft);
+      const top = Math.max(12, preferredTop);
+      runFlowPortal.style.left = `${left}px`;
+      runFlowPortal.style.top = `${top}px`;
+    }
+
+    function hideRunFlowPortal() {
+      runFlowPortal.hidden = true;
+      runFlowPortal.innerHTML = "";
+    }
+
+    function scheduleHideRunFlowPortal() {
+      clearTimeout(runFlowHideTimer);
+      runFlowHideTimer = setTimeout(hideRunFlowPortal, 120);
+    }
+
+    function buildRunFlowEvents(run) {
+      const data = app.observability || {};
+      const rawEvents = (data.events || [])
+        .filter((event) => event.runId === run.id)
+        .sort((a, b) => {
+          const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+          if (timeDiff !== 0) return timeDiff;
+          return observeEventOrder(a.type) - observeEventOrder(b.type);
+        });
+      const important = rawEvents.filter((event) => {
+        if (event.type === "status" && !event.skillName) return false;
+        return ["run_start", "status", "skill_start", "skill_trace", "skill_end", "tool_start", "tool_end", "error", "run_end"].includes(event.type);
+      });
+      const compacted = important.slice(0, 8).map((event) => {
+        const detail = [
+          event.durationMs !== undefined ? formatMs(event.durationMs) : "",
+          event.message || event.outputPreview || event.inputPreview || event.type,
+        ].filter(Boolean).join(" · ");
+        return {
+          title: observeEventTitle(event),
+          detail,
+          status: event.status || "success",
+          time: formatTimeMs(event.createdAt),
+        };
+      });
+      if (important.length > compacted.length) {
+        compacted.push({
+          title: "更多节点已折叠",
+          detail: `还有 ${important.length - compacted.length} 个 Trace 节点，可在右侧时间线查看`,
+          status: "running",
+          time: "",
+        });
+      }
+      if (compacted.length) return compacted;
+      return [
+        {
+          title: "运行记录已创建",
+          detail: run.prompt || "暂无详细 Trace",
+          status: run.status || "success",
+          time: formatTimeMs(run.startedAt),
+        },
+      ];
+    }
+
+    function renderObserveVisuals(data) {
+      const overview = data.overview || {};
+      const successRate = Math.max(0, Math.min(100, Number(overview.successRate || 0)));
+      const circumference = 2 * Math.PI * 42;
+      const dash = circumference * successRate / 100;
+      const p50 = numericMs(overview.p50DurationMs);
+      const p95 = numericMs(overview.p95DurationMs);
+      const p99 = numericMs(overview.p99DurationMs);
+      const maxLatency = Math.max(p50, p95, p99, 1);
+      const skillCalls = (data.skillStats || []).reduce((sum, item) => sum + Number(item.calls || 0), 0);
+      const toolCalls = (data.toolStats || []).reduce((sum, item) => sum + Number(item.calls || 0), 0);
+      const totalCalls = Math.max(skillCalls + toolCalls, 1);
+      const skillWidth = Math.round((skillCalls / totalCalls) * 190);
+      const toolWidth = Math.round((toolCalls / totalCalls) * 190);
+      const totalRuns = Number(overview.totalRuns || 0);
+      const successRuns = Number(overview.successRuns || 0);
+      const failedRuns = Number(overview.failedRuns || 0);
+      const runningRuns = Number(overview.runningRuns || 0);
+      const statusMax = Math.max(successRuns, failedRuns, runningRuns, 1);
+
+      $("#observeVisuals").innerHTML = `
+        <section class="visual-card">
+          <h2>成功率概览</h2>
+          <svg viewBox="0 0 220 126" role="img" aria-label="成功率 ${successRate}%">
+            <circle class="chart-track" cx="62" cy="62" r="42" fill="none" stroke-width="12" />
+            <circle class="chart-ok" cx="62" cy="62" r="42" fill="none" stroke-width="12" stroke-linecap="round" stroke-dasharray="${dash} ${circumference - dash}" transform="rotate(-90 62 62)" />
+            <text class="chart-strong" x="62" y="58" text-anchor="middle">${successRate}%</text>
+            <text class="chart-muted" x="62" y="76" text-anchor="middle">success</text>
+            <text class="chart-muted" x="126" y="48">成功 ${overview.successRuns || 0}</text>
+            <text class="chart-muted" x="126" y="70">失败 ${overview.failedRuns || 0}</text>
+            <text class="chart-muted" x="126" y="92">总计 ${overview.totalRuns || 0}</text>
+          </svg>
+        </section>
+        <section class="visual-card">
+          <h2>延迟分位</h2>
+          <svg viewBox="0 0 260 126" role="img" aria-label="P50 P95 P99 延迟">
+            ${[
+              ["P50", p50, 24],
+              ["P95", p95, 98],
+              ["P99", p99, 172],
+            ].map(([label, value, x]) => {
+              const height = Math.max(8, Math.round((Number(value) / maxLatency) * 78));
+              const y = 98 - height;
+              return `<rect class="chart-bar-soft" x="${x}" y="20" width="48" height="78" rx="7"></rect><rect class="chart-bar" x="${x}" y="${y}" width="48" height="${height}" rx="7"></rect><text class="chart-muted" x="${Number(x) + 24}" y="116" text-anchor="middle">${label}</text><text class="chart-muted" x="${Number(x) + 24}" y="${Math.max(16, y - 6)}" text-anchor="middle">${formatMs(value)}</text>`;
+            }).join("")}
+          </svg>
+        </section>
+        <section class="visual-card">
+          <h2>调用分布</h2>
+          <svg viewBox="0 0 260 126" role="img" aria-label="Skill 与 Tool 调用分布">
+            <text class="chart-muted" x="16" y="28">Skill 调用</text>
+            <rect class="chart-bar-soft" x="16" y="38" width="190" height="18" rx="9"></rect>
+            <rect class="chart-bar" x="16" y="38" width="${skillWidth}" height="18" rx="9"></rect>
+            <text class="chart-muted" x="218" y="52">${skillCalls}</text>
+            <text class="chart-muted" x="16" y="82">Tool 调用</text>
+            <rect class="chart-bar-soft" x="16" y="92" width="190" height="18" rx="9"></rect>
+            <rect class="chart-bar" x="16" y="92" width="${toolWidth}" height="18" rx="9"></rect>
+            <text class="chart-muted" x="218" y="106">${toolCalls}</text>
+          </svg>
+        </section>
+        <section class="visual-card">
+          <h2>运行状态</h2>
+          <svg viewBox="0 0 260 126" role="img" aria-label="运行状态分布">
+            ${[
+              ["成功", successRuns, 20, "chart-bar"],
+              ["异常", failedRuns, 92, "chart-warn"],
+              ["运行中", runningRuns, 164, "chart-bar-soft"],
+            ].map(([label, value, x, cls]) => {
+              const height = Math.max(8, Math.round((Number(value) / statusMax) * 72));
+              const y = 94 - height;
+              return `<rect class="${cls}" x="${x}" y="${y}" width="48" height="${height}" rx="7"></rect><text class="chart-muted" x="${Number(x) + 24}" y="112" text-anchor="middle">${label}</text><text class="chart-muted" x="${Number(x) + 24}" y="${Math.max(16, y - 6)}" text-anchor="middle">${value}</text>`;
+            }).join("")}
+            <text class="chart-muted" x="224" y="28">总计</text>
+            <text class="chart-strong" x="224" y="54">${totalRuns}</text>
+          </svg>
+        </section>
+      `;
+    }
+
+    function renderTimeline() {
+      const data = app.observability;
+      if (!data) return;
+      const selectedRunId = app.selected.run;
+      let events = (data.events || []).filter((event) => !selectedRunId || event.runId === selectedRunId);
+      if (app.observeFilter === "skill") {
+        events = events.filter((event) => event.type === "skill_start" || event.type === "skill_trace" || event.type === "skill_end");
+      } else if (app.observeFilter === "tool") {
+        events = events.filter((event) => event.type === "tool_start" || event.type === "tool_end");
+      } else if (app.observeFilter === "error") {
+        events = events.filter((event) => event.status === "failed" || event.status === "timeout" || event.status === "aborted" || event.type === "error");
+      }
+      events = [...events].sort((a, b) => {
+        const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return observeEventOrder(a.type) - observeEventOrder(b.type);
+      });
+      $("#observeTimeline").innerHTML = events.map((event) => `
+        <div class="timeline-item ${event.status}">
+          <span class="timeline-dot"></span>
+          <div class="timeline-main">
+            <b>${escapeHtml(observeEventTitle(event))}</b>
+            <p>${formatTimeMs(event.createdAt)} · ${event.skillName ? `Skill ${escapeHtml(event.skillName)} · ` : ""}${event.durationMs !== undefined ? `${formatMs(event.durationMs)} · ` : ""}${escapeHtml(event.message || event.outputPreview || event.inputPreview || event.type)}</p>
+          </div>
+        </div>
+      `).join("") || `<div class="muted">当前筛选下暂无 Trace 事件</div>`;
+    }
+
+    function renderToolTrace() {
+      if (!app.observability) return;
+      const toolEvents = (app.observability.events || [])
+        .filter((event) => event.type === "tool_start" || event.type === "tool_end")
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 8);
+      toolLog.innerHTML = toolEvents.map((event) => {
+        const state = event.type === "tool_start" ? "running" : event.status === "failed" ? "error" : "done";
+        const title = `${event.toolName || event.name} · ${state === "running" ? "运行中" : state === "error" ? "失败" : "完成"}`;
+        const detail = [
+          formatTimeMs(event.createdAt),
+          event.skillName ? `Skill ${event.skillName}` : "独立 Tool",
+          event.durationMs ? formatMs(event.durationMs) : "",
+          event.message || event.outputPreview || event.inputPreview || "",
+        ].filter(Boolean).join("\n");
+        return `<div class="tool-card ${state}"><b>${escapeHtml(title)}</b><pre>${escapeHtml(detail)}</pre></div>`;
+      }).join("") || `<div class="muted">暂无工具轨迹。执行一次带 Tool 或 Skill 的任务后会展示真实调用记录。</div>`;
+    }
+
+    function renderRightPanel(agent, skills, tools, runtime) {
+      const enabledSkillIds = new Set(agent?.skillIds || []);
+      const enabledToolNames = new Set(agent?.toolNames || []);
+      const agentSkills = skills.filter((item) => enabledSkillIds.has(item.id));
+      const agentTools = tools.filter((item) => enabledToolNames.has(item.name));
+      $("#rightAgentSummary").innerHTML = agent ? `<b>${agent.name}</b><br>${agent.description}` : "暂无 Agent";
+      $("#rightInfo").innerHTML = agent ? [
+        ["业务场景", agent.key],
+        ["Agent Key", agent.key],
+        ["状态", agent.status],
+        ["Max Loop", agent.maxLoop],
+        ["模型", runtime.model],
+        ["超时", `${agent.timeoutMs}ms`],
+      ].map(([k, v]) => `<div class="config-field"><span>${k}</span><b>${v}</b></div>`).join("") : "";
+      $("#rightSkills").innerHTML = agentSkills.map((item) => `<span class="tag">${escapeHtml(item.name)}</span>`).join("") || `<span class="muted">未启用 Skill</span>`;
+      $("#rightTools").innerHTML = agentTools.map((item) => `<span class="tag">${escapeHtml(item.name)}</span>`).join("") || `<span class="muted">未启用 Tool</span>`;
+    }
+
+    function renderAgentOptions(selectedAgent = {}) {
+      const selectedSkillIds = new Set(selectedAgent.skillIds || app.state.agents[0]?.skillIds || []);
+      const selectedToolNames = new Set(selectedAgent.toolNames || app.state.agents[0]?.toolNames || []);
+      $("#agentSkillOptions").innerHTML = app.state.skills.map((skill) => `
+        <label class="check-pill"><input type="checkbox" name="skillIds" value="${escapeHtml(skill.id)}" ${selectedSkillIds.has(skill.id) ? "checked" : ""} /><span>${escapeHtml(skill.label || skill.name)}</span></label>
+      `).join("") || `<span class="muted">暂无 Skill 配置</span>`;
+      $("#agentToolOptions").innerHTML = app.state.tools.map((tool) => `
+        <label class="check-pill"><input type="checkbox" name="toolNames" value="${escapeHtml(tool.name)}" ${selectedToolNames.has(tool.name) ? "checked" : ""} /><span>${escapeHtml(tool.label || tool.name)}</span></label>
+      `).join("") || `<span class="muted">暂无 Tool 配置</span>`;
+    }
+
+    function renderAgents() {
+      const agents = app.state.agents;
+      $("#agentStats").innerHTML = [
+        stat("全部 Agent", agents.length),
+        stat("已发布", agents.filter((item) => item.status === "ACTIVE").length),
+        stat("草稿", agents.filter((item) => item.status === "DRAFT").length),
+        stat("已停用", agents.filter((item) => item.status === "DISABLED").length),
+      ].join("");
+      $("#agentRows").innerHTML = agents.map((item) => `
+        <tr>
+          <td>${item.name}</td><td>${item.key}</td><td>${item.model}</td><td>${badge(item.status)}</td>
+          <td><div class="row-actions"><button class="mini-btn" data-edit-agent="${item.id}">编辑</button><button class="danger-btn" data-delete-agent="${item.id}">删除</button></div></td>
+        </tr>`).join("");
+    }
+
+    function renderSkills() {
+      const skills = app.state.skills;
+      $("#skillStats").innerHTML = [
+        stat("全部 Skills", skills.length),
+        stat("PROD", skills.filter((item) => item.status === "PROD").length),
+        stat("DRAFT", skills.filter((item) => item.status === "DRAFT").length),
+        stat("DISABLED", skills.filter((item) => item.status === "DISABLED").length),
+      ].join("");
+      $("#skillRows").innerHTML = skills.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.label)}</td><td>${badge(item.sourceType || "local")}</td><td>${escapeHtml(item.installPath || item.entryFile || "SKILL.md")}</td><td>${badge(item.status)}</td>
+          <td><div class="row-actions"><button class="mini-btn" data-edit-skill="${item.id}">编辑</button><button class="danger-btn" data-delete-skill="${item.id}">删除</button></div></td>
+        </tr>`).join("");
+    }
+
+    function renderTools() {
+      const tools = app.state.tools;
+      $("#toolStats").innerHTML = [
+        stat("全部 Tools", tools.length),
+        stat("启用", tools.filter((item) => item.status === "ENABLED").length),
+        stat("只读", tools.filter((item) => item.access === "read").length),
+        stat("写入或执行", tools.filter((item) => item.access !== "read").length),
+      ].join("");
+      $("#toolRows").innerHTML = tools.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.label)}</td><td>${badge(item.category)}</td><td>${badge(item.access)}</td><td>${badge(item.status)}</td>
+          <td><div class="row-actions"><button class="mini-btn" data-edit-tool="${item.id}">编辑</button><button class="danger-btn" data-delete-tool="${item.id}">删除</button></div></td>
+        </tr>`).join("");
+    }
+
+    function renderKnowledge() {
+      const list = app.state.knowledge;
+      const published = list.filter((item) => item.status === "PUBLISHED" && String(item.content || "").trim());
+      $("#knowledgeStats").innerHTML = [
+        stat("全部配置", list.length),
+        stat("可检索", published.length),
+        stat("向量分块", list.reduce((sum, item) => sum + ((item.chunks || []).length), 0)),
+        stat("已停用", list.filter((item) => item.status === "DISABLED").length),
+      ].join("");
+      $("#knowledgeRows").innerHTML = list.length ? list.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.name)}</td>
+          <td>${escapeHtml(item.code)}</td>
+          <td>${escapeHtml(item.sourceType)}</td>
+          <td>${String(item.content || "").trim().length} 字 · ${(item.chunks || []).length} 块${Array.isArray(item.tags) && item.tags.length ? ` · ${item.tags.map(escapeHtml).join("、")}` : ""}</td>
+          <td>${badge(item.status)}</td>
+          <td><div class="row-actions"><button class="mini-btn" data-edit-knowledge="${item.id}">编辑</button><button class="danger-btn" data-delete-knowledge="${item.id}">删除</button></div></td>
+        </tr>`).join("") : `<tr><td colspan="6" class="muted">暂无知识库。点击右上角新建。</td></tr>`;
+    }
+
+    function fillForm(form, data = {}) {
+      if (form.id === "agentForm") renderAgentOptions(data);
+      if (form.id === "knowledgeForm") {
+        $("#knowledgeEditorTitle").textContent = data.id ? "编辑知识库" : "新建知识库";
+      }
+      [...form.elements].forEach((el) => {
+        if (!el.name) return;
+        if (el.type === "checkbox") {
+          const value = data[el.name];
+          const values = Array.isArray(value) ? value : [];
+          el.checked = values.includes(el.value);
+          return;
+        }
+        const value = data[el.name];
+        if (Array.isArray(value)) el.value = value.join(",");
+        else el.value = value ?? "";
+      });
+    }
+
+    function focusEditor(form) {
+      const editor = form.closest(".editor");
+      editor?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      editor?.classList.add("edit-flash");
+      setTimeout(() => editor?.classList.remove("edit-flash"), 700);
+      requestAnimationFrame(() => form.querySelector("input:not([type='hidden']), textarea, select")?.focus());
+    }
+
+    function syncKnowledgeSourceUi() {
+      const form = $("#knowledgeForm");
+      const sourceType = form.elements.sourceType.value || "manual";
+      document.querySelectorAll("[data-source-panel]").forEach((panel) => {
+        panel.classList.toggle("active", panel.dataset.sourcePanel === sourceType);
+      });
+      const contentField = form.querySelector("[name='content']");
+      const manualLabel = form.querySelector("[data-manual-content-field]");
+      const isManual = sourceType === "manual";
+      contentField.required = isManual;
+      manualLabel.style.display = isManual ? "" : "none";
+    }
+
+    function startCreateKnowledge() {
+      const form = $("#knowledgeForm");
+      fillForm(form, { status: "PUBLISHED", sourceType: "manual", tags: [] });
+      $("#knowledgeEditorTitle").textContent = "新建知识库";
+      $("#knowledgeSearchResults").innerHTML = `<span class="muted">填写内容并保存后，这条知识会立即参与检索和 Agent 回答。</span>`;
+      syncKnowledgeSourceUi();
+      focusEditor(form);
+    }
+
+    function knowledgeMetaFromForm() {
+      const form = $("#knowledgeForm");
+      return {
+        name: form.elements.name.value.trim(),
+        code: form.elements.code.value.trim(),
+        description: form.elements.description.value.trim(),
+      };
+    }
+
+    async function importKnowledgeFile() {
+      const fileInput = $("#knowledgeFileInput");
+      const file = fileInput.files?.[0];
+      if (!file) {
+        $("#knowledgeSearchResults").innerHTML = `<span class="muted">请先选择一个文本类文件。</span>`;
+        return;
+      }
+      const button = $("#importKnowledgeFileBtn");
+      button.disabled = true;
+      button.textContent = "导入中";
+      try {
+        const meta = knowledgeMetaFromForm();
+        const res = await fetch("/api/knowledge/import-file", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": file.type || "text/plain",
+            "X-File-Name": encodeURIComponent(file.name),
+            "X-Knowledge-Name": meta.name,
+            "X-Knowledge-Code": meta.code,
+            "X-Knowledge-Description": meta.description,
+          },
+          body: file,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.error || "文件导入失败");
+        }
+        const record = await res.json();
+        await loadState();
+        fillForm($("#knowledgeForm"), record);
+        syncKnowledgeSourceUi();
+        $("#knowledgeSearchResults").innerHTML = `<span class="muted">文件已导入：${escapeHtml(record.name)}，内容 ${String(record.content || "").length} 字，已参与检索。</span>`;
+      } catch (err) {
+        $("#knowledgeSearchResults").innerHTML = `<span class="muted">文件导入失败：${escapeHtml(err.message)}</span>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "导入文件并创建知识库";
+        fileInput.value = "";
+      }
+    }
+
+    async function importKnowledgeUrl() {
+      const urlInput = $("#knowledgeUrlInput");
+      const url = urlInput.value.trim();
+      if (!url) {
+        $("#knowledgeSearchResults").innerHTML = `<span class="muted">请输入要抓取的 URL。</span>`;
+        urlInput.focus();
+        return;
+      }
+      const button = $("#importKnowledgeUrlBtn");
+      button.disabled = true;
+      button.textContent = "抓取中";
+      try {
+        const record = await api("/api/knowledge/import-url", {
+          method: "POST",
+          body: JSON.stringify({ ...knowledgeMetaFromForm(), url }),
+        });
+        await loadState();
+        fillForm($("#knowledgeForm"), record);
+        syncKnowledgeSourceUi();
+        $("#knowledgeSearchResults").innerHTML = `<span class="muted">URL 已导入：${escapeHtml(record.name)}，内容 ${String(record.content || "").length} 字，已参与检索。</span>`;
+      } catch (err) {
+        $("#knowledgeSearchResults").innerHTML = `<span class="muted">URL 导入失败：${escapeHtml(err.message)}</span>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "抓取 URL 并创建知识库";
+      }
+    }
+
+    function formData(form) {
+      return Object.fromEntries(new FormData(form).entries());
+    }
+
+    function normalizeTags(value) {
+      if (Array.isArray(value)) return value;
+      return String(value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    async function searchKnowledge() {
+      const searchInput = $("#knowledgeSearchInput");
+      const results = $("#knowledgeSearchResults");
+      const query = searchInput.value.trim();
+      if (!query) {
+        results.innerHTML = `<span class="muted">请输入要验证的问题或关键词。</span>`;
+        searchInput.focus();
+        return;
+      }
+      results.innerHTML = `<span class="muted">检索中...</span>`;
+      const data = await api(`/api/knowledge/search?q=${encodeURIComponent(query)}&limit=5`);
+      results.innerHTML = data.hits.length ? `<span class="muted">检索模式：${escapeHtml(data.mode || "keyword")} · ${escapeHtml(data.embeddingProvider || "none")}</span>` + data.hits.map((hit) => `
+        <div class="kb-hit">
+          <div class="kb-hit-head"><b>${escapeHtml(hit.name)}</b><span>score ${hit.score} · vector ${hit.vectorScore ?? "-"} · chunk ${(hit.chunkIndex ?? 0) + 1}</span></div>
+          <p>${escapeHtml(hit.snippet)}</p>
+        </div>`).join("") : `<span class="muted">没有命中已发布知识。草稿和停用知识不会参与检索。</span>`;
+    }
+
+    async function saveResource(kind, form, normalize) {
+      const values = normalize(formData(form));
+      const id = values.id;
+      delete values.id;
+      await api(`/api/${kind}${id ? `/${id}` : ""}`, {
+        method: id ? "PUT" : "POST",
+        body: JSON.stringify(values),
+      });
+      fillForm(form);
+      await loadState();
+    }
+
+    async function deleteResource(kind, id) {
+      if (!confirm("确认删除这条配置？")) return;
+      await api(`/api/${kind}/${id}`, { method: "DELETE" });
+      await loadState();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderInlineMarkdown(value) {
+      return escapeHtml(value)
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    }
+
+    function renderMarkdown(source) {
+      const blocks = [];
+      const lines = String(source ?? "").replace(/\r\n/g, "\n").split("\n");
+      let paragraph = [];
+      let list = null;
+      let inCode = false;
+      let codeLines = [];
+
+      const flushParagraph = () => {
+        if (!paragraph.length) return;
+        blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+        paragraph = [];
+      };
+      const flushList = () => {
+        if (!list) return;
+        blocks.push(`<${list.type}>${list.items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${list.type}>`);
+        list = null;
+      };
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("```")) {
+          if (inCode) {
+            blocks.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+            codeLines = [];
+            inCode = false;
+          } else {
+            flushParagraph();
+            flushList();
+            inCode = true;
+          }
+          continue;
+        }
+        if (inCode) {
+          codeLines.push(line);
+          continue;
+        }
+        if (!trimmed) {
+          flushParagraph();
+          flushList();
+          continue;
+        }
+        const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+        if (heading) {
+          flushParagraph();
+          flushList();
+          blocks.push(`<h${heading[1].length}>${renderInlineMarkdown(heading[2])}</h${heading[1].length}>`);
+          continue;
+        }
+        const unordered = trimmed.match(/^[-*]\s+(.+)$/);
+        const ordered = trimmed.match(/^\d+\.\s+(.+)$/);
+        if (unordered || ordered) {
+          flushParagraph();
+          const type = unordered ? "ul" : "ol";
+          if (!list || list.type !== type) {
+            flushList();
+            list = { type, items: [] };
+          }
+          list.items.push((unordered || ordered)[1]);
+          continue;
+        }
+        const quote = trimmed.match(/^>\s+(.+)$/);
+        if (quote) {
+          flushParagraph();
+          flushList();
+          blocks.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
+          continue;
+        }
+        paragraph.push(trimmed);
+      }
+      flushParagraph();
+      flushList();
+      if (inCode) blocks.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      return blocks.join("");
+    }
+
+    function scrollChatToBottom() {
+      requestAnimationFrame(() => {
+        chatScroll.scrollTop = chatScroll.scrollHeight;
+      });
+    }
+
+    function setBubbleContent(bubble, text) {
+      bubble.dataset.raw = text;
+      if (bubble.dataset.role === "assistant" || bubble.closest(".message")?.classList.contains("assistant")) {
+        bubble.classList.add("markdown");
+        bubble.innerHTML = renderMarkdown(text);
+      } else {
+        bubble.textContent = text;
+      }
+      scrollChatToBottom();
+    }
+
+    function resetChatSurface() {
+      messages.innerHTML = "";
+      messages.classList.remove("has-content");
+      chatView.classList.remove("chatting");
+      assistantBubble = null;
+    }
+
+    function renderConversation(conversation) {
+      app.currentConversationId = conversation.id;
+      resetChatSurface();
+      for (const item of conversation.messages || []) {
+        addMessage(item.role, item.content);
+      }
+      if ((conversation.messages || []).length > 0) {
+        chatView.classList.add("chatting");
+        messages.classList.add("has-content");
+      }
+      renderAll();
+      switchView("chat");
+      input.focus();
+      scrollChatToBottom();
+    }
+
+    async function openConversation(id) {
+      const conversation = await api(`/api/conversations/${id}`);
+      renderConversation(conversation);
+    }
+
+    function openDeleteConversationModal(id) {
+      const conversation = app.state.conversations.find((item) => item.id === id);
+      if (!conversation) return;
+      pendingDeleteConversationId = id;
+      deleteConversationName.textContent = conversation.title || "未命名会话";
+      deleteConversationMeta.textContent = `最近更新 ${formatTime(conversation.updatedAt)} · ${(conversation.messages || []).length} 条消息`;
+      deleteConversationModal.hidden = false;
+      $("#confirmDeleteConversation").focus();
+    }
+
+    function closeDeleteConversationModal() {
+      pendingDeleteConversationId = null;
+      deleteConversationModal.hidden = true;
+    }
+
+    function hideConversation(id) {
+      hiddenConversationIds.add(id);
+      localStorage.setItem("new-agent-hidden-conversations", JSON.stringify([...hiddenConversationIds]));
+      if (app.currentConversationId === id) {
+        const next = app.state.conversations.find((item) => !hiddenConversationIds.has(item.id));
+        if (next) renderConversation(next);
+        else {
+          app.currentConversationId = null;
+          resetChatSurface();
+          renderAll();
+          switchView("chat");
+        }
+      } else {
+        renderAll();
+      }
+    }
+
+    function confirmHideConversation() {
+      if (!pendingDeleteConversationId) return;
+      const id = pendingDeleteConversationId;
+      closeDeleteConversationModal();
+      hideConversation(id);
+    }
+
+    async function createConversation() {
+      const conversation = await api("/api/conversations", { method: "POST", body: JSON.stringify({ title: "新会话" }) });
+      app.currentConversationId = conversation.id;
+      await loadState();
+      renderConversation(conversation);
+    }
+
+    function addMessage(role, text = "") {
+      chatView.classList.add("chatting");
+      messages.classList.add("has-content");
+      const wrap = document.createElement("div");
+      wrap.className = `message ${role}`;
+      wrap.innerHTML = role === "user"
+        ? `<div class="bubble"></div><div class="avatar" title="User">U</div>`
+        : `<div class="avatar" title="New-Agent">NA</div><div class="bubble"></div>`;
+      const bubble = wrap.querySelector(".bubble");
+      bubble.dataset.role = role;
+      messages.appendChild(wrap);
+      setBubbleContent(bubble, text);
+      scrollChatToBottom();
+      return bubble;
+    }
+
+    function addApprovalCard(data) {
+      const bubble = addMessage("assistant");
+      bubble.innerHTML = `
+        <b>需要审批：${escapeHtml(data.toolName)}</b>
+        <p>${escapeHtml(data.reason || "该工具调用需要人工确认")}</p>
+        <pre class="approval-details">${escapeHtml(data.inputPreview || "无参数")}</pre>
+        <div class="approval-actions" data-approval-card="${data.id}">
+          <button class="mini-btn" type="button" data-approval-decision="rejected" data-approval-id="${data.id}" data-approval-token="${data.token}">拒绝</button>
+          <button class="send-btn" type="button" data-approval-decision="approved" data-approval-id="${data.id}" data-approval-token="${data.token}" title="批准工具调用">✓</button>
+        </div>`;
+      statePill.textContent = "等待审批";
+      scrollChatToBottom();
+    }
+
+    function addStructuredResult(data) {
+      const citations = Array.isArray(data.citations) ? data.citations : [];
+      const nextActions = Array.isArray(data.nextActions) ? data.nextActions : [];
+      const hasBusinessData = data.businessData && Object.keys(data.businessData).length > 0;
+      const needsAttention = data.status && data.status !== "success";
+      if (!needsAttention && !hasBusinessData && citations.length === 0 && nextActions.length === 0) return;
+
+      const bubble = assistantBubble || addMessage("assistant");
+      const statusLabel = data.status === "needs_input"
+        ? "需要补充信息"
+        : data.status === "failed"
+          ? "执行失败"
+          : "业务结果详情";
+      const businessData = hasBusinessData
+        ? `<pre class="approval-details">${escapeHtml(JSON.stringify(data.businessData, null, 2))}</pre>`
+        : "";
+      const details = document.createElement("details");
+      details.className = "structured-meta";
+      details.open = needsAttention;
+      details.innerHTML = `
+        <summary>${escapeHtml(statusLabel)}</summary>
+        <div class="structured-meta-body">
+          <p>状态：${escapeHtml(data.status || "unknown")} · 置信度 ${Math.round(Number(data.confidence || 0) * 100)}%</p>
+          ${businessData}
+          ${citations.length ? `<p>引用：${citations.map((item) => escapeHtml(item.title || item.sourceId)).join("、")}</p>` : ""}
+          ${nextActions.length ? `<p>下一步：${nextActions.map(escapeHtml).join("、")}</p>` : ""}
+        </div>`;
+      bubble.appendChild(details);
+      scrollChatToBottom();
+    }
+
+    function upsertTool(data, status) {
+      let card = toolCards.get(data.id);
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "tool-card running";
+        card.innerHTML = `<b></b><pre></pre>`;
+        toolCards.set(data.id, card);
+        toolLog.prepend(card);
+      }
+      card.className = `tool-card ${status}`;
+      card.querySelector("b").textContent = `${data.name || "tool"} · ${status === "running" ? "运行中" : data.isError ? "失败" : "完成"}`;
+      card.querySelector("pre").textContent = JSON.stringify(data.args ?? data.result ?? {}, null, 2);
+    }
+
+    function parseSse(buffer, onEvent) {
+      const parts = buffer.split("\n\n");
+      const rest = parts.pop() ?? "";
+      for (const part of parts) {
+        const lines = part.split("\n");
+        const eventLine = lines.find((line) => line.startsWith("event: "));
+        const dataLines = lines.filter((line) => line.startsWith("data: "));
+        if (!eventLine || dataLines.length === 0) continue;
+        const rawData = dataLines.map((line) => line.slice(6)).join("\n");
+        onEvent(eventLine.slice(7), JSON.parse(rawData));
+      }
+      return rest;
+    }
+
+    function handleEvent(type, data) {
+      if (type === "text") {
+        if (!assistantBubble) assistantBubble = addMessage("assistant");
+        setBubbleContent(assistantBubble, (assistantBubble.dataset.raw || "") + data.delta);
+      } else if (type === "text_full") {
+        if (!assistantBubble) assistantBubble = addMessage("assistant");
+        if (!(assistantBubble.dataset.raw || "").trim()) setBubbleContent(assistantBubble, data.text);
+      } else if (type === "conversation") {
+        app.currentConversationId = data.id;
+        loadState().catch(console.error);
+      } else if (type === "tool_start") {
+        upsertTool(data, "running");
+      } else if (type === "tool_update") {
+        upsertTool(data, "running");
+      } else if (type === "tool_end") {
+        upsertTool(data, data.isError ? "error" : "done");
+      } else if (type === "status") {
+        statePill.textContent = data.label;
+      } else if (type === "run") {
+        activeRunId = data.id;
+      } else if (type === "approval_required") {
+        addApprovalCard(data);
+      } else if (type === "structured_result") {
+        addStructuredResult(data);
+      } else if (type === "error") {
+        addMessage("assistant", `执行失败：${data.message}`);
+      } else if (type === "done") {
+        statePill.textContent = "空闲";
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
+        aborter = null;
+        activeRunId = null;
+      }
+    }
+
+    function createIdempotencyKey() {
+      if (typeof globalThis.crypto?.randomUUID === "function") {
+        return globalThis.crypto.randomUUID();
+      }
+      return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    async function sendTask(retryOfRunId = null) {
+      const retryRun = retryOfRunId
+        ? (app.observability?.runs || []).find((item) => item.id === retryOfRunId)
+        : null;
+      const message = retryRun ? (retryRun.input || retryRun.prompt || "重新执行任务") : input.value.trim();
+      if (!message || aborter) return;
+      if (retryRun?.conversationId) app.currentConversationId = retryRun.conversationId;
+      if (!app.currentConversationId) {
+        await createConversation();
+      }
+      addMessage("user", retryRun ? `重新执行：${message}` : message);
+      if (!retryRun) input.value = "";
+      assistantBubble = null;
+      statePill.textContent = "执行中";
+      sendBtn.disabled = true;
+      stopBtn.disabled = false;
+      aborter = new AbortController();
+      activeRunId = null;
+      try {
+        const idempotencyKey = createIdempotencyKey();
+        const res = await fetch("/chat", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify({
+            message,
+            conversationId: app.currentConversationId,
+            retryOfRunId: retryRun?.id,
+          }),
+          signal: aborter.signal,
+        });
+        if (!res.ok || !res.body) throw new Error((await res.json()).error || "请求失败");
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          buffer = parseSse(buffer, handleEvent);
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") addMessage("assistant", `执行失败：${err.message}`);
+      } finally {
+        statePill.textContent = "空闲";
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
+        aborter = null;
+        activeRunId = null;
+        loadObservability().catch(console.error);
+      }
+    }
+
+    document.addEventListener("click", async (event) => {
+      const deleteConversationTarget = event.target.closest("[data-delete-conversation]");
+      if (deleteConversationTarget) {
+        event.preventDefault();
+        event.stopPropagation();
+        openDeleteConversationModal(deleteConversationTarget.dataset.deleteConversation);
+        return;
+      }
+      const target = event.target.closest("button");
+      const historyTarget = event.target.closest(".history-item[data-conversation-id]");
+      const runTarget = event.target.closest(".run-item[data-select-run]");
+      if (event.target.closest(".run-flow")) return;
+      if (!target && !historyTarget && !runTarget) return;
+      if (target?.dataset.approvalDecision) {
+        const card = target.closest("[data-approval-card]");
+        card?.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+        try {
+          await api(`/api/approvals/${target.dataset.approvalId}/decision`, {
+            method: "POST",
+            body: JSON.stringify({
+              decision: target.dataset.approvalDecision,
+              token: target.dataset.approvalToken,
+            }),
+          });
+          statePill.textContent = target.dataset.approvalDecision === "approved" ? "审批通过，继续执行" : "已拒绝，继续处理";
+        } catch (error) {
+          addMessage("assistant", `审批失败：${error.message}`);
+        }
+        return;
+      }
+      if (target?.dataset.retryRun) {
+        event.preventDefault();
+        event.stopPropagation();
+        await sendTask(target.dataset.retryRun);
+        return;
+      }
+      if (target?.dataset.moduleTab) {
+        const [moduleName, tabName] = target.dataset.moduleTab.split(":");
+        setModuleTab(moduleName, tabName);
+        return;
+      }
+      if (target?.dataset.view === "chat") await createConversation();
+      else if (target?.dataset.view) switchView(target.dataset.view);
+      if (target?.dataset.jump) switchView(target.dataset.jump);
+      if (historyTarget) await openConversation(historyTarget.dataset.conversationId);
+      if (target?.dataset.task) {
+        input.value = target.dataset.task;
+        input.focus();
+      }
+      if (target?.dataset.editAgent) fillForm($("#agentForm"), app.state.agents.find((item) => item.id === target.dataset.editAgent));
+      if (target?.dataset.editSkill) fillForm($("#skillForm"), app.state.skills.find((item) => item.id === target.dataset.editSkill));
+      if (target?.dataset.editTool) fillForm($("#toolForm"), app.state.tools.find((item) => item.id === target.dataset.editTool));
+      if (target?.dataset.editKnowledge) {
+        const form = $("#knowledgeForm");
+        fillForm(form, app.state.knowledge.find((item) => item.id === target.dataset.editKnowledge));
+        syncKnowledgeSourceUi();
+        focusEditor(form);
+      }
+      if (target?.dataset.deleteAgent) await deleteResource("agents", target.dataset.deleteAgent);
+      if (target?.dataset.deleteSkill) await deleteResource("skills", target.dataset.deleteSkill);
+      if (target?.dataset.deleteTool) await deleteResource("tools", target.dataset.deleteTool);
+      if (target?.dataset.deleteKnowledge) await deleteResource("knowledge", target.dataset.deleteKnowledge);
+      if (target?.dataset.editEvalCase) {
+        const item = app.evaluation?.cases?.find((entry) => entry.id === target.dataset.editEvalCase);
+        if (item) fillEvalCaseForm(item);
+      }
+      if (target?.dataset.deleteEvalCase) await deleteEvalCase(target.dataset.deleteEvalCase);
+      if (target?.dataset.ackAlert) {
+        await api(`/api/observability/alerts/${target.dataset.ackAlert}/ack`, { method: "POST" });
+        await loadObservability();
+      }
+      if (target?.dataset.cancelEvalJob) {
+        await api(`/api/evals/jobs/${target.dataset.cancelEvalJob}/cancel`, { method: "POST" });
+        await loadEvaluation();
+      }
+      if (target?.dataset.selectEvalRun) {
+        app.selected.evalRun = target.dataset.selectEvalRun;
+        renderEvaluation();
+      }
+      if (target?.dataset.evalPage) {
+        app.evalCasePage += target.dataset.evalPage === "next" ? 1 : -1;
+        renderEvaluation();
+        $("#evalCaseRows").closest(".table-scroll")?.scrollTo({ top: 0 });
+      }
+      if (runTarget?.dataset.selectRun) {
+        app.selected.run = runTarget.dataset.selectRun;
+        renderObservability();
+      }
+      if (target?.dataset.observeFilter) {
+        app.observeFilter = target.dataset.observeFilter;
+        document.querySelectorAll(".observe-filter").forEach((btn) => btn.classList.toggle("active", btn.dataset.observeFilter === app.observeFilter));
+        renderTimeline();
+      }
+    });
+
+    document.addEventListener("keydown", async (event) => {
+      if (!deleteConversationModal.hidden && event.key === "Escape") {
+        closeDeleteConversationModal();
+        return;
+      }
+      const runTarget = event.target.closest?.(".run-item[data-select-run]");
+      if (runTarget && !event.target.closest?.(".run-flow") && ["Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        app.selected.run = runTarget.dataset.selectRun;
+        renderObservability();
+        return;
+      }
+      const historyTarget = event.target.closest?.(".history-item[data-conversation-id]");
+      if (!historyTarget || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      await openConversation(historyTarget.dataset.conversationId);
+    });
+
+    $("#refreshBtn").addEventListener("click", async () => {
+      await loadState();
+      await loadObservability();
+      if (app.evaluation) await loadEvaluation();
+    });
+    $("#themeBtn").addEventListener("click", () => {
+      applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+    });
+    $("#sendBtn").addEventListener("click", () => sendTask());
+    $("#stopBtn").addEventListener("click", async () => {
+      if (activeRunId) {
+        await api(`/api/runs/${activeRunId}/cancel`, { method: "POST" }).catch(() => null);
+      }
+      aborter?.abort();
+    });
+    $("#newConversationBtn").addEventListener("click", createConversation);
+    $("#logoutBtn").addEventListener("click", async () => {
+      await api("/api/auth/logout", { method: "POST" }).catch(() => null);
+      app.state = null;
+      app.observability = null;
+      app.evaluation = null;
+      evalSelectedCases.clear();
+      app.currentConversationId = null;
+      resetChatSurface();
+      showLogin("已退出登录");
+    });
+    $("#showRegisterBtn").addEventListener("click", () => {
+      loginForm.hidden = true;
+      registerForm.hidden = false;
+      authError.textContent = "";
+      registerError.textContent = "";
+      requestAnimationFrame(() => registerForm.querySelector("input[name='registerUser']")?.focus());
+    });
+    $("#showLoginBtn").addEventListener("click", () => {
+      showLogin();
+    });
+    $("#loginForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submit = form.querySelector("button[type='submit']");
+      const data = Object.fromEntries(new FormData(form).entries());
+      submit.disabled = true;
+      authError.textContent = "";
+      try {
+        const res = await api("/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({
+            username: data.loginUser,
+            password: data.loginPass,
+          }),
+        });
+        hideLogin(res.user);
+        await loadState();
+        await loadObservability();
+        await loadEvaluation();
+      } catch (err) {
+        showLogin(err.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    $("#registerForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submit = form.querySelector("button[type='submit']");
+      const data = Object.fromEntries(new FormData(form).entries());
+      registerError.textContent = "";
+      if (data.registerPass !== data.registerPassConfirm) {
+        registerError.textContent = "两次输入的密码不一致";
+        return;
+      }
+      submit.disabled = true;
+      try {
+        const res = await api("/api/auth/register", {
+          method: "POST",
+          body: JSON.stringify({
+            username: data.registerUser,
+            displayName: data.registerDisplayName,
+            password: data.registerPass,
+          }),
+        });
+        hideLogin(res.user);
+        await loadState();
+        await loadObservability();
+        await loadEvaluation();
+      } catch (err) {
+        registerError.textContent = err.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    $("#cancelDeleteConversation").addEventListener("click", closeDeleteConversationModal);
+    $("#confirmDeleteConversation").addEventListener("click", confirmHideConversation);
+    deleteConversationModal.addEventListener("click", (event) => {
+      if (event.target === deleteConversationModal) closeDeleteConversationModal();
+    });
+    document.addEventListener("mouseover", (event) => {
+      const trigger = event.target.closest?.("[data-run-flow]");
+      if (trigger) showRunFlowPortal(trigger);
+    });
+    document.addEventListener("mouseout", (event) => {
+      const trigger = event.target.closest?.("[data-run-flow]");
+      if (trigger && !trigger.contains(event.relatedTarget) && !runFlowPortal.contains(event.relatedTarget)) scheduleHideRunFlowPortal();
+    });
+    document.addEventListener("focusin", (event) => {
+      const trigger = event.target.closest?.("[data-run-flow]");
+      if (trigger) showRunFlowPortal(trigger);
+    });
+    document.addEventListener("focusout", (event) => {
+      const trigger = event.target.closest?.("[data-run-flow]");
+      if (trigger && !runFlowPortal.contains(event.relatedTarget)) scheduleHideRunFlowPortal();
+    });
+    runFlowPortal.addEventListener("mouseenter", () => clearTimeout(runFlowHideTimer));
+    runFlowPortal.addEventListener("mouseleave", scheduleHideRunFlowPortal);
+    document.addEventListener("scroll", hideRunFlowPortal, true);
+    window.addEventListener("resize", hideRunFlowPortal);
+    $("#createAgentBtn").addEventListener("click", () => fillForm($("#agentForm"), { status: "DRAFT", model: app.state.runtime.model, maxLoop: 300, timeoutMs: 120000, skillIds: [], toolNames: [] }));
+    $("#uploadSkillBtn").addEventListener("click", () => $("#skillUploadInput").click());
+    $("#skillUploadInput").addEventListener("change", (event) => uploadSkillPackage(event.target.files?.[0]));
+    $("#createToolBtn").addEventListener("click", () => fillForm($("#toolForm"), { status: "ENABLED", category: "agent", access: "read" }));
+    $("#createKnowledgeBtn").addEventListener("click", startCreateKnowledge);
+    $("#resetAgentForm").addEventListener("click", () => fillForm($("#agentForm")));
+    $("#resetSkillForm").addEventListener("click", () => fillForm($("#skillForm")));
+    $("#resetToolForm").addEventListener("click", () => fillForm($("#toolForm")));
+    $("#resetKnowledgeForm").addEventListener("click", () => {
+      fillForm($("#knowledgeForm"));
+      syncKnowledgeSourceUi();
+    });
+    $("#knowledgeSourceType").addEventListener("change", syncKnowledgeSourceUi);
+    $("#importKnowledgeFileBtn").addEventListener("click", importKnowledgeFile);
+    $("#importKnowledgeUrlBtn").addEventListener("click", importKnowledgeUrl);
+    $("#knowledgeSearchBtn").addEventListener("click", () => searchKnowledge().catch((err) => {
+      $("#knowledgeSearchResults").innerHTML = `<span class="muted">检索失败：${escapeHtml(err.message)}</span>`;
+    }));
+    $("#knowledgeSearchInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        searchKnowledge().catch((err) => {
+          $("#knowledgeSearchResults").innerHTML = `<span class="muted">检索失败：${escapeHtml(err.message)}</span>`;
+        });
+      }
+    });
+
+    $("#observeRunSearchForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      searchObservabilityRuns().catch((error) => alert(`检索运行失败：${error.message}`));
+    });
+    $("#resetObserveRunSearch").addEventListener("click", () => {
+      $("#observeRunSearchForm").reset();
+      loadObservability().catch(console.error);
+    });
+
+    $("#newEvalCaseBtn").addEventListener("click", () => {
+      setModuleTab("evaluation", "cases");
+      resetEvalCaseForm();
+      focusEditor($("#evalCaseForm"));
+    });
+    $("#resetEvalCaseBtn").addEventListener("click", resetEvalCaseForm);
+    $("#evalCategory").addEventListener("change", syncEvalCasePanels);
+    $("#evalCaseSearch").addEventListener("input", () => {
+      app.evalCasePage = 1;
+      renderEvaluation();
+    });
+    $("#evalCaseFilter").addEventListener("change", () => {
+      app.evalCasePage = 1;
+      renderEvaluation();
+    });
+    $("#evalDatasetFilter").addEventListener("change", () => {
+      app.evalCasePage = 1;
+      renderEvaluation();
+      $("#evalCaseForm").elements.datasetId.value = $("#evalDatasetFilter").value;
+    });
+    $("#createEvalDatasetBtn").addEventListener("click", async () => {
+      const input = $("#newEvalDatasetName");
+      const name = input.value.trim();
+      if (!name) return input.focus();
+      try {
+        const dataset = await api("/api/evals/datasets", { method: "POST", body: JSON.stringify({ name }) });
+        input.value = "";
+        await loadEvaluation();
+        $("#evalDatasetFilter").value = dataset.id;
+        $("#evalCaseForm").elements.datasetId.value = dataset.id;
+        renderEvaluation();
+      } catch (error) {
+        alert(`创建数据集失败：${error.message}`);
+      }
+    });
+    $("#evalGateForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = formData(event.currentTarget);
+      try {
+        await api("/api/evals/gate", {
+          method: "PUT",
+          body: JSON.stringify({ minPassRate: Number(values.minPassRate) / 100, maxRegressions: Number(values.maxRegressions) }),
+        });
+        await loadEvaluation();
+      } catch (error) {
+        alert(`保存发布门禁失败：${error.message}`);
+      }
+    });
+    $("#runEvalBtn").addEventListener("click", runEvaluation);
+    $("#evalCaseRows").addEventListener("change", (event) => {
+      const checkbox = event.target.closest("[data-eval-select]");
+      if (!checkbox) return;
+      if (checkbox.checked) evalSelectedCases.add(checkbox.dataset.evalSelect);
+      else evalSelectedCases.delete(checkbox.dataset.evalSelect);
+      $("#evalSelectionText").textContent = evalSelectedCases.size ? `已选择 ${evalSelectedCases.size} 条用例` : "未选择时运行全部启用用例";
+    });
+    $("#setEvalBaselineBtn").addEventListener("click", async () => {
+      if (!app.selected.evalRun) return;
+      const button = $("#setEvalBaselineBtn");
+      button.disabled = true;
+      try {
+        await api(`/api/evals/runs/${app.selected.evalRun}/baseline`, { method: "POST" });
+        await loadEvaluation();
+      } catch (error) {
+        $("#evalRunDetail").insertAdjacentHTML("afterbegin", `<p class="muted">设置基线失败：${escapeHtml(error.message)}</p>`);
+        button.disabled = false;
+      }
+    });
+    $("#evalCaseForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submit = form.querySelector("button[type='submit']");
+      submit.disabled = true;
+      try {
+        const id = form.elements.id.value;
+        const payload = evalCasePayload(form);
+        await api(`/api/evals/cases${id ? `/${id}` : ""}`, {
+          method: id ? "PUT" : "POST",
+          body: JSON.stringify(payload),
+        });
+        resetEvalCaseForm();
+        await loadEvaluation();
+      } catch (error) {
+        alert(`保存失败：${error.message}`);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    $("#agentForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveResource("agents", event.currentTarget, (v) => ({
+        ...v,
+        maxLoop: Number(v.maxLoop || 300),
+        timeoutMs: Number(v.timeoutMs || 120000),
+        skillIds: [...event.currentTarget.querySelectorAll('input[name="skillIds"]:checked')].map((item) => item.value),
+        toolNames: [...event.currentTarget.querySelectorAll('input[name="toolNames"]:checked')].map((item) => item.value),
+      }));
+    });
+    $("#skillForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveResource("skills", event.currentTarget, (v) => ({
+        ...v,
+        entryFile: v.entryFile || "SKILL.md",
+        installPath: v.installPath || "",
+        toolNames: String(v.toolNames || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      }));
+    });
+    $("#toolForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveResource("tools", event.currentTarget, (v) => v);
+    });
+    $("#knowledgeForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveResource("knowledge", event.currentTarget, (v) => ({
+        ...v,
+        tags: normalizeTags(v.tags),
+      }));
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) sendTask();
+    });
+
+    checkAuth()
+      .then((ok) => ok ? loadState() : Promise.reject(new Error("未登录")))
+      .then(loadObservability)
+      .then(loadEvaluation)
+      .then(() => {
+        const latest = app.state.conversations.find((item) => item.id === app.currentConversationId);
+        if (latest?.messages?.length) renderConversation(latest);
+      })
+      .catch((err) => {
+        if (err.message !== "未登录") {
+          statePill.textContent = "离线";
+          console.error(err);
+        }
+      });
+  </script>
+</body>
+</html>
