@@ -1,0 +1,26 @@
+{
+  "name": "current-time",
+  "tools": [
+    {
+      "name": "current_time",
+      "label": "查询时间",
+      "description": "查询当前服务器时间。适合回答现在几点、今天日期、当前时区等时间相关问题。",
+      "category": "agent",
+      "access": "read",
+      "command": "node tools/current-time.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "IANA 时区名称，例如 Asia/Shanghai。默认使用 Asia/Shanghai。"
+          },
+          "locale": {
+            "type": "string",
+            "description": "格式化语言，例如 zh-CN 或 en-US。默认 zh-CN。"
+          }
+        }
+      }
+    }
+  ]
+}

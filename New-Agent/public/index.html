@@ -3940,6 +3940,15 @@
       stopBtn.disabled = true;
       aborter = null;
       activeRunId = null;
+    } else if (type === "tool_start") {
+      // 首次收到 Tool 时创建卡片，并显示运行中状态。
+      upsertTool(data, "running");
+    } else if (type === "tool_update") {
+      // 长任务可多次更新同一张卡片，不新增重复记录。
+      upsertTool(data, "running");
+    } else if (type === "tool_end") {
+      // Tool 结束后根据 isError 切换为成功或失败状态。
+      upsertTool(data, data.isError ? "error" : "done");
     }
   }
 
