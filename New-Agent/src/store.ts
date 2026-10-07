@@ -61,12 +61,41 @@ export type ConversationRecord = {
   createdAt: string;
   updatedAt: string;
 };
+/** 一次高风险 Tool 调用对应一条审批记录。 */
+export type ApprovalRecord = {
+  // 审批记录唯一 ID，也是决定接口 URL 的一部分。
+  id: string;
+  // 关联本轮生成任务，取消 run 时可以批量取消其审批。
+  runId: string;
+  // 关联业务会话，后续持久化时仍能追踪来源。
+  conversationId: string;
+  // Pi 为本次 Tool 调用生成的唯一 ID。
+  toolCallId: string;
+  // 请求执行的 Tool 名称，例如 write、edit、bash。
+  toolName: string;
+  // 本节只有写入和破坏性操作会创建审批。
+  risk: "write" | "destructive";
+  // pending 表示等待用户决定；其余状态都不可再次处理。
+  status: "pending" | "approved" | "rejected" | "expired" | "canceled";
+  // 只保存经过脱敏和截断的参数预览，不保存完整敏感输入。
+  inputPreview: string;
+  // 告诉用户为什么本次调用需要审批。
+  reason: string;
+  // 状态层只保存哈希，不保存明文 token。
+  tokenHash: string;
+  createdAt: string;
+  expiresAt: string;
+  decidedAt?: string;
+  decidedBy?: string;
+};
+
 
 export type AppState = {
   agents: AgentRecord[];
   skills: SkillRecord[];
   tools: ToolRecord[];
   conversations: ConversationRecord[];
+  approvals: ApprovalRecord[];
 };
 
 // store.ts 只需要模型标识，不应依赖 Pi SDK 内部使用的具体 Model 类型。
@@ -96,8 +125,8 @@ let state: AppState = {
     timeoutMs: 120_000,
     // 把成品 current-time Skill 装配给默认 Agent。
     skillIds: ["skill_current_time"],
-    // 当前只开放安全的只读工具。
-    toolNames: ["read", "grep", "find", "ls"],
+    // 开放完整 Pi 内置 Tool；写操作由 guard 统一审批。
+    toolNames: ["read", "bash", "write", "edit", "grep", "find", "ls"],
     updatedAt,
   }],
   skills: [{
@@ -113,15 +142,15 @@ let state: AppState = {
     toolNames: ["current_time"],
     updatedAt,
   }],
-  // bash/write/edit 先登记但禁用，后续完成审批后再开放。
+  // 启用写工具，但真正执行前必须通过人工审批。
   tools: [
     ["read", "读取文件", "filesystem", "read", "ENABLED"],
     ["grep", "搜索文本", "search", "read", "ENABLED"],
     ["find", "查找文件", "search", "read", "ENABLED"],
     ["ls", "列出目录", "filesystem", "read", "ENABLED"],
-    ["bash", "执行命令", "shell", "execute", "DISABLED"],
-    ["write", "写入文件", "filesystem", "write", "DISABLED"],
-    ["edit", "编辑文件", "filesystem", "write", "DISABLED"],
+    ["bash", "执行命令", "shell", "execute", "ENABLED"],
+    ["write", "写入文件", "filesystem", "write", "ENABLED"],
+    ["edit", "编辑文件", "filesystem", "write", "ENABLED"],
   ].map(([name, label, category, access, status]) => ({
     id: `tool_${name}`,
     name: name as string,
@@ -133,6 +162,7 @@ let state: AppState = {
     updatedAt,
   })),
   conversations: [],
+  approvals: [],
 };
 
 // 第二节先用内存；后续只替换这两个函数内部，调用方保持不变。

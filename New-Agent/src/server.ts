@@ -11,7 +11,12 @@ import {
   SessionManager,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
+import { auditExtension } from "./extensions/audit.ts";
+import { guardExtension } from "./extensions/guard.ts";
 import { runtimeConfig } from "./config.ts";
+import type { ToolPolicyDecision } from "./policy/tool-policy.ts";
+import { ApprovalRegistry } from "./runtime/approval-registry.ts";
+import { safePreview } from "./security/redaction.ts";
 import {
   createSkillToolDefinitions,
   discoverSkillPackageTools,
@@ -23,15 +28,16 @@ import {
   updateRecord,
   writeState,
   type AgentRecord,
+  type ApprovalRecord,
   type AppState,
   type ConversationRecord,
   type SkillRecord,
   type ToolRecord,
 } from "./store.ts";
 
-// 第二节只开放只读的 Pi 内置 Tool。
-// bash、write、edit 等高风险 Tool 会在后续“安全审批”课程中接入。
-const CORE_TOOLS = ["read", "grep", "find", "ls"];
+// 第三节开放完整 Pi 内置 Tool。
+// 是否允许执行由 Agent 配置与 guard 安全策略共同决定。
+const CORE_TOOLS = ["read", "bash", "write", "edit", "grep", "find", "ls"];
 
 // -----------------------------------------------------------------------------
 // 1. 初始化模型
@@ -74,8 +80,17 @@ type RuntimeContext = {
   loader: DefaultResourceLoader;
   // 第二节暂时只维护一个进程内 Session；会话树和持久化留到后续课程。
   session?: Awaited<ReturnType<typeof createAgentSession>>["session"];
+  // 审批 Registry 让 guard 中暂停的 Tool 调用等待前端决定。
+  approvalRegistry: ApprovalRegistry;
+  // 聊天路由建立 SSE 后注入通知函数；没有活跃请求时为空。
+  approvalNotifier?: (approval: ApprovalRecord & { token: string }) => void;
+  // 当前运行标识用于把 Tool 审批关联到正确的 run 和 conversation。
+  activeRunId?: string;
+  activeConversationId?: string;
   // 当前允许执行的 Tool 名称集合。
   runtimeAllowedTools: Set<string>;
+  // 被当前 Agent 引用但状态不是 PROD 的 Skill/Tool 名称。
+  runtimeDisabledSkills: Set<string>;
   // 当前真正交给 Pi 的 Skill。
   runtimePiSkills: Skill[];
   // Skill 加载诊断信息，供管理页排查配置问题。
@@ -130,6 +145,23 @@ function buildRuntimePiSkills(state: AppState, agentId?: string) {
     // 只加载 AppState 明确启用的 Skill，不扫描其他默认目录。
     includeDefaults: false,
   });
+}
+
+// 把运行时真实的 Skill/Tool 开关追加进系统提示词。
+// 这能减少模型发起无效 Tool 调用，但真正的安全边界仍然是 guard。
+function buildRuntimePrompt(ctx: RuntimeContext): string {
+  const allowed = [...ctx.runtimeAllowedTools].join("、") || "无";
+  const disabled = [...ctx.runtimeDisabledSkills].join("、") || "无";
+  const skills = ctx.runtimePiSkills.map((skill) => skill.name).join("、") || "无";
+
+  return [
+    "当前运行时能力配置：",
+    `- 当前已安装并启用 Skill：${skills}`,
+    `- 当前可调用工具：${allowed}`,
+    `- 当前已禁用 Skill：${disabled}`,
+    "- 只能使用当前可调用工具完成任务。",
+    "- 如果某个 Skill 已禁用，不能通过其他工具绕行完成该 Skill 的专属能力。",
+  ].join("\n");
 }
 
 // 计算模型本轮真正可以调用的 Tool。
@@ -202,6 +234,18 @@ async function previewExecutableTools(
   return getExecutableTools(previewContext, state, agentId);
 }
 
+// 返回被当前 Agent 绑定、但未处于 PROD 状态的 Skill 和其 Tool 名称。
+function getDisabledSkillNames(state: AppState, agentId?: string): string[] {
+  const agent = getActiveAgent(state, agentId);
+  const agentSkillIds = new Set(agent?.skillIds ?? []);
+
+  return state.skills
+    .filter(
+      (skill) => agentSkillIds.has(skill.id) && skill.status !== "PROD",
+    )
+    .flatMap((skill) => [skill.name, ...skill.toolNames]);
+}
+
 // -----------------------------------------------------------------------------
 // 3. 创建 ResourceLoader 与 AgentSession
 // -----------------------------------------------------------------------------
@@ -213,10 +257,73 @@ function readSystemPrompt(): string {
   );
 }
 
+// 审批超时后同步更新 AppState；Registry 会同时把等待中的 Tool 按拒绝恢复。
+async function expireApproval(
+  ctx: RuntimeContext,
+  approvalId: string,
+): Promise<void> {
+  const state = await readState(selectedModel);
+  const approval = state.approvals.find((item) => item.id === approvalId);
+  if (!approval || approval.status !== "pending") return;
+
+  approval.status = "expired";
+  approval.decidedAt = new Date().toISOString();
+  await writeState(state);
+}
+
+// guard 发现写入或破坏性操作时调用本函数，并等待用户决定。
+async function requestToolApproval(
+  ctx: RuntimeContext,
+  event: any,
+  decision: ToolPolicyDecision,
+): Promise<boolean> {
+  if (!ctx.activeRunId || !ctx.activeConversationId) return false;
+  if (!activeRuns.has(ctx.activeRunId)) return false;
+
+  const state = await readState(selectedModel);
+  const createdAt = new Date();
+  const approvalId = `approval_${randomUUID()}`;
+  const pending = ctx.approvalRegistry.create(
+    approvalId,
+    ctx.activeRunId,
+    runtimeConfig.approvalTimeoutMs,
+    () => expireApproval(ctx, approvalId),
+  );
+
+  const approval: ApprovalRecord = {
+    id: approvalId,
+    runId: ctx.activeRunId,
+    conversationId: ctx.activeConversationId,
+    toolCallId: String(event.toolCallId || `tool_call_${randomUUID()}`),
+    toolName: String(event.toolName || "unknown"),
+    risk: decision.risk === "destructive" ? "destructive" : "write",
+    status: "pending",
+    // 审批页面只接收脱敏后的有限长度预览。
+    inputPreview: safePreview(event.input, 500),
+    reason: decision.reason || "该工具调用需要人工审批",
+    tokenHash: pending.tokenHash,
+    createdAt: createdAt.toISOString(),
+    expiresAt: new Date(
+      createdAt.getTime() + runtimeConfig.approvalTimeoutMs,
+    ).toISOString(),
+  };
+
+  state.approvals.unshift(approval);
+  // 内存课程版本最多保留 500 条，避免列表无限增长。
+  state.approvals = state.approvals.slice(0, 500);
+  await writeState(state);
+
+  // 明文 token 只通过本次 SSE 交给前端；AppState 中只保存哈希。
+  ctx.approvalNotifier?.({ ...approval, token: pending.token });
+  return pending.promise;
+}
+
 function createRuntimeContext(): RuntimeContext {
   // 先创建除 loader 以外的可变上下文。
   const ctx = {
+    approvalRegistry: new ApprovalRegistry(),
     runtimeAllowedTools: new Set<string>(CORE_TOOLS),
+    runtimeDisabledSkills: new Set<string>(),
     runtimePiSkills: [],
     runtimeSkillDiagnostics: [],
     runtimeSkillToolNames: new Set<string>(),
@@ -230,12 +337,25 @@ function createRuntimeContext(): RuntimeContext {
     noSkills: true,
     // 沿用第一节的系统提示词。
     systemPromptOverride: () => readSystemPrompt(),
-    appendSystemPromptOverride: () => [],
+    // 动态提示当前能力范围，降低模型尝试越权 Tool 的概率。
+    appendSystemPromptOverride: () => [buildRuntimePrompt(ctx)],
     // 回调读取 ctx 的最新值，因此配置更新后 reload() 即可生效。
     skillsOverride: () => ({
       skills: ctx.runtimePiSkills,
       diagnostics: ctx.runtimeSkillDiagnostics as any[],
     }),
+    // guard 在 Tool 执行前拦截；audit 在执行开始/结束时记录脱敏日志。
+    extensionFactories: [
+      (pi: any) => guardExtension(
+        pi,
+        () => ({
+          allowedTools: ctx.runtimeAllowedTools,
+          disabledSkills: ctx.runtimeDisabledSkills,
+        }),
+        (event, decision) => requestToolApproval(ctx, event, decision),
+      ),
+      auditExtension,
+    ],
   });
 
   return ctx;
@@ -272,6 +392,9 @@ async function applyRuntimePolicy(
 
   const executableTools = getExecutableTools(ctx, state, agentId);
   ctx.runtimeAllowedTools = new Set(executableTools);
+  ctx.runtimeDisabledSkills = new Set(
+    getDisabledSkillNames(state, agentId),
+  );
   return executableTools;
 }
 
@@ -594,6 +717,91 @@ app.get("/api/conversations/:id", async (request, response) => {
   response.json(conversation);
 });
 
+// 查询审批记录。待审批 token 每次查询都会轮换，旧页面中的 token 随即失效。
+app.get("/api/approvals", async (request, response) => {
+  const state = await readState(selectedModel);
+  const requestedStatus =
+    typeof request.query.status === "string"
+      ? request.query.status
+      : undefined;
+  const approvals = state.approvals.filter(
+    (item) => !requestedStatus || item.status === requestedStatus,
+  );
+
+  let changed = false;
+  const result = approvals.map((approval) => {
+    if (approval.status !== "pending") return approval;
+    const rotated = runtime.approvalRegistry.rotateToken(approval.id);
+    if (!rotated) return approval;
+
+    approval.tokenHash = rotated.tokenHash;
+    changed = true;
+    return { ...approval, token: rotated.token };
+  });
+
+  if (changed) await writeState(state);
+  response.json({ approvals: result });
+});
+
+// 提交批准或拒绝。approvalId 和一次性 token 必须同时匹配。
+app.post("/api/approvals/:id/decision", async (request, response) => {
+  const decision = request.body?.decision;
+  const token = String(request.body?.token || "");
+
+  if (!["approved", "rejected"].includes(decision) || !token) {
+    return response.status(400).json({
+      error: "decision 和一次性审批 token 不能为空",
+    });
+  }
+
+  if (!runtime.approvalRegistry.verify(request.params.id, token)) {
+    return response.status(409).json({
+      error: "审批已失效或 token 不正确",
+    });
+  }
+
+  const state = await readState(selectedModel);
+  const approval = state.approvals.find(
+    (item) => item.id === request.params.id,
+  );
+
+  if (!approval || approval.status !== "pending") {
+    return response.status(409).json({ error: "审批已处理或不存在" });
+  }
+
+  approval.status = decision;
+  approval.decidedAt = new Date().toISOString();
+  approval.decidedBy = "course-user";
+  await writeState(state);
+
+  // 最后才恢复 guard 中等待的 Promise；批准返回 true，拒绝返回 false。
+  runtime.approvalRegistry.decide(
+    approval.id,
+    token,
+    decision === "approved",
+  );
+
+  // 不把 tokenHash 返回给浏览器。
+  const { tokenHash: _tokenHash, ...safeApproval } = approval;
+  response.json({ approval: safeApproval });
+});
+
+// 将某次运行仍在等待的审批记录统一标记为取消。
+async function cancelApprovalsForRun(runId: string): Promise<void> {
+  runtime.approvalRegistry.cancelRun(runId);
+  const state = await readState(selectedModel);
+  let changed = false;
+
+  for (const approval of state.approvals) {
+    if (approval.runId !== runId || approval.status !== "pending") continue;
+    approval.status = "canceled";
+    approval.decidedAt = new Date().toISOString();
+    changed = true;
+  }
+
+  if (changed) await writeState(state);
+}
+
 // 取消指定 runId 对应的当前生成。
 app.post("/api/runs/:runId/cancel", async (request, response) => {
   const run = activeRuns.get(request.params.runId);
@@ -601,6 +809,7 @@ app.post("/api/runs/:runId/cancel", async (request, response) => {
     return response.status(404).json({ error: "运行不存在或已经结束" });
   }
 
+  await cancelApprovalsForRun(request.params.runId);
   await runtime.session.abort();
   response.json({ ok: true });
 });
@@ -656,6 +865,8 @@ app.post("/chat", async (request, response) => {
   let assistantText = "";
 
   activeRuns.set(runId, { conversationId });
+  runtime.activeRunId = runId;
+  runtime.activeConversationId = conversationId;
   appendConversationMessage(conversation, "user", message);
   await writeState(state);
 
@@ -670,6 +881,13 @@ app.post("/chat", async (request, response) => {
   writeSse(response, "run", { id: runId });
   writeSse(response, "conversation", { id: conversationId });
   writeSse(response, "status", { state: "running", label: "思考中" });
+
+  // guard 请求审批时，通过当前聊天连接把审批卡片立即推送给浏览器。
+  runtime.approvalNotifier = (approval) => {
+    if (clientClosed || response.writableEnded) return;
+    const { tokenHash: _tokenHash, ...payload } = approval;
+    writeSse(response, "approval_required", payload);
+  };
 
   // 必须先订阅，再调用 prompt()，否则快速返回时可能漏掉首个事件。
   const unsubscribe = session.subscribe((event) => {
@@ -691,6 +909,7 @@ app.post("/chat", async (request, response) => {
   response.on("close", () => {
     if (!response.writableEnded) {
       clientClosed = true;
+      void cancelApprovalsForRun(runId);
       void session.abort();
     }
   });
@@ -699,8 +918,17 @@ app.post("/chat", async (request, response) => {
     await session.prompt(message);
 
     const finalText = assistantText.trim() || "模型本轮没有返回文本。";
-    appendConversationMessage(conversation, "assistant", finalText);
-    await writeState(state);
+
+    // 审批接口会在 Tool 等待期间更新 AppState。
+    // 因此这里重新读取最新状态，避免用聊天开始时的旧快照覆盖审批结果。
+    const latestState = await readState(selectedModel);
+    const latestConversation = latestState.conversations.find(
+      (item) => item.id === conversation.id,
+    );
+    if (latestConversation) {
+      appendConversationMessage(latestConversation, "assistant", finalText);
+      await writeState(latestState);
+    }
 
     if (!clientClosed) {
       writeSse(response, "status", { state: "idle", label: "空闲" });
@@ -708,12 +936,20 @@ app.post("/chat", async (request, response) => {
     }
   } catch (error) {
     if (!clientClosed) {
-      const text = error instanceof Error ? error.message : "Agent 执行失败";
+      const text = safePreview(
+        error instanceof Error ? error.message : "Agent 执行失败",
+        500,
+      );
       writeSse(response, "error", { message: text });
     }
   } finally {
     unsubscribe();
     activeRuns.delete(runId);
+    if (runtime.activeRunId === runId) {
+      runtime.activeRunId = undefined;
+      runtime.activeConversationId = undefined;
+      runtime.approvalNotifier = undefined;
+    }
     if (!clientClosed) response.end();
   }
 });
@@ -723,7 +959,7 @@ app.post("/chat", async (request, response) => {
 // -----------------------------------------------------------------------------
 
 const server = app.listen(port, () => {
-  console.log(`New-Agent 第二节：http://localhost:${port}`);
+  console.log(`New-Agent：http://localhost:${port}`);
 });
 
 function shutdown(signal: string): void {

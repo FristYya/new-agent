@@ -31,4 +31,11 @@ export const runtimeConfig = {
         1024 * 1024,
         "SKILL_MAX_OUTPUT_BYTES",
     ),
+    // 人工审批最长等待时间。
+    // 超时后按拒绝处理，避免 session.prompt() 永久停在 Tool 调用处。
+    approvalTimeoutMs: positiveInteger(
+        process.env.APPROVAL_TIMEOUT_MS,
+        5 * 60 * 1000,
+        "APPROVAL_TIMEOUT_MS",
+    ),
 } as const;

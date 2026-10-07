@@ -1,6 +1,6 @@
 # New-Agent
 
-这是五节 Pi SDK Agent 课程中第二节完成后的代码。它在第一节“模型、AgentSession、Web SSE 与取消”基础上，继续加入 Skill、Tool、运行时白名单和管理接口。
+这是五节 Pi SDK Agent 课程中第三节完成后的代码。它在第二节“Skill、Tool 装配”基础上，继续加入 Tool 风险分级、Pi guard 扩展、人工审批、一次性 token 和日志脱敏。
 
 ## 当前已完成
 
@@ -12,8 +12,13 @@
 - 根据 Agent、Skill 和 Tool 状态计算执行白名单
 - 通过 SSE 推送 `tool_start`、`tool_update`、`tool_end`
 - 提供 Agent、Skill、Tool 的 CRUD 接口
+- 通过 `tool_call` guard 拦截越权、写入和破坏性 Tool
+- 使用一次性审批 token 连接后端等待任务与前端决定
+- 审批超时、运行取消时自动拒绝待执行 Tool
+- 对审批参数、日志和错误消息做递归脱敏
+- 通过 SSE 推送 `approval_required`，并在聊天区完成批准或拒绝
 
-会话树、磁盘持久化、安全审批、可观测和评测属于后续课程，本节暂不实现。
+会话树、磁盘持久化、可观测和评测属于后续课程，本节暂不实现。
 
 ## 启动
 
@@ -33,18 +38,18 @@ npm run dev
 - `SKILL_TIMEOUT_MS`：Skill Tool 执行超时
 - `SKILL_MAX_INPUT_BYTES`：Skill Tool 最大输入字节数
 - `SKILL_MAX_OUTPUT_BYTES`：Skill Tool 最大输出字节数
+- `APPROVAL_TIMEOUT_MS`：人工审批最长等待时间，默认 5 分钟
 
-## 第二节关键文件
+## 第三节新增关键文件
 
 ```text
-src/config.ts
-src/server.ts
-src/skill-tools.ts
-src/store.ts
-skills/current-time/SKILL.md
-skills/current-time/skill.json
-skills/current-time/tools/current-time.mjs
+src/policy/tool-policy.ts
+src/runtime/approval-registry.ts
+src/security/redaction.ts
+src/extensions/guard.ts
+src/extensions/audit.ts
 public/index.html
+tests/lesson-03.test.ts
 ```
 
-`conversation-store.ts` 和 `session-runtime.ts` 是第一节的临时拆分文件，第二节完成后不再保留。
+第二节的 `config.ts`、`store.ts` 和 `server.ts` 继续在原文件上递增，不创建临时 Demo。

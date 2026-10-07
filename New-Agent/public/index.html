@@ -3920,6 +3920,12 @@
       // dataset.raw 保存未渲染的完整 Markdown；每次在旧文本后追加 delta。
       const oldText = assistantBubble.dataset.raw || "";
       setBubbleContent(assistantBubble, oldText + data.delta);
+    } else if (type === "text_full") {
+      // 增量文本为空时，用服务端最终完整文本兜底。
+      if (!assistantBubble) assistantBubble = addMessage("assistant");
+      if (!(assistantBubble.dataset.raw || "").trim()) {
+        setBubbleContent(assistantBubble, data.text);
+      }
     } else if (type === "conversation") {
       // 用服务端确认的会话 ID 同步页面，并异步刷新左侧历史列表。
       app.currentConversationId = data.id;
@@ -3949,6 +3955,9 @@
     } else if (type === "tool_end") {
       // Tool 结束后根据 isError 切换为成功或失败状态。
       upsertTool(data, data.isError ? "error" : "done");
+    } else if (type === "approval_required") {
+      // guard 阻塞了高风险 Tool：显示一次性批准/拒绝卡片。
+      addApprovalCard(data);
     }
   }
 
