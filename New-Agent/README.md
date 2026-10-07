@@ -1,23 +1,50 @@
-# New-Agent｜Pi SDK 课程脚手架
+# New-Agent
 
-这个目录只包含课程起点，不包含最终 Agent 后端答案。`public/index.html` 是完整前端；五节课中只累计开发 Node.js/TypeScript Agent 后端。
+这是五节 Pi SDK Agent 课程中第二节完成后的代码。它在第一节“模型、AgentSession、Web SSE 与取消”基础上，继续加入 Skill、Tool、运行时白名单和管理接口。
 
-## 第一次启动
+## 当前已完成
+
+- 初始化 Pi `ModelRuntime` 并选择可用模型
+- 使用 `AgentSession` 完成流式对话与取消
+- 使用内存 `store.ts` 管理 Agent、Skill、Tool 和会话
+- 加载 `skills/current-time/SKILL.md`
+- 将 `skill.json` 中的脚本适配成 Pi Tool
+- 根据 Agent、Skill 和 Tool 状态计算执行白名单
+- 通过 SSE 推送 `tool_start`、`tool_update`、`tool_end`
+- 提供 Agent、Skill、Tool 的 CRUD 接口
+
+会话树、磁盘持久化、安全审批、可观测和评测属于后续课程，本节暂不实现。
+
+## 启动
 
 ```bash
 npm install
-cp .env.example .env
+npm run typecheck
+npm test
 npm run dev
 ```
 
-浏览器访问 `http://localhost:3100`。此时页面可打开，但发送消息等 Agent 接口会返回 `501`，这是正确的起始状态。
+浏览器访问 `http://localhost:3100`。
 
-## 五节课完成后的能力
+启动前需要先完成 Pi 模型与凭据配置。可选环境变量包括：
 
-1. Pi 模型、系统提示词和 `AgentSession` 生命周期。
-2. Web SSE 流式输出、取消和稳定事件协议。
-3. Tool、Skill、Extension、工具白名单与人工审批。
-4. 原生 Pi 会话树、多会话隔离和持久化恢复。
-5. 可观测、评测、结构化结果、MySQL 适配与最终装配。
+- `PORT`：HTTP 端口，默认 `3100`
+- `AGENT_MODEL`：指定 `model-id` 或 `provider/model-id`
+- `SKILL_TIMEOUT_MS`：Skill Tool 执行超时
+- `SKILL_MAX_INPUT_BYTES`：Skill Tool 最大输入字节数
+- `SKILL_MAX_OUTPUT_BYTES`：Skill Tool 最大输出字节数
 
-拜访、CRM 和其他业务事务不属于本课程。后续 Java 服务通过受控 Tool/API 接入，Node.js 层只负责编排 Agent。
+## 第二节关键文件
+
+```text
+src/config.ts
+src/server.ts
+src/skill-tools.ts
+src/store.ts
+skills/current-time/SKILL.md
+skills/current-time/skill.json
+skills/current-time/tools/current-time.mjs
+public/index.html
+```
+
+`conversation-store.ts` 和 `session-runtime.ts` 是第一节的临时拆分文件，第二节完成后不再保留。

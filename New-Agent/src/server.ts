@@ -1,4 +1,3 @@
-// 完整代码
 import express from "express";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -175,6 +174,32 @@ function getExecutableTools(
     (toolName) =>
       enabledBaseTools.has(toolName) || enabledSkillTools.has(toolName),
   );
+}
+
+// /api/state 会在第一次聊天之前被前端调用。
+// 此时正式 RuntimeContext 尚未执行 applyRuntimePolicy()，所以不能直接读取其中的
+// runtimeSkillToolNames；这里基于当前配置创建一份只读预览，避免状态页漏掉 Skill Tool。
+async function previewExecutableTools(
+  ctx: RuntimeContext,
+  state: AppState,
+  agentId?: string,
+): Promise<string[]> {
+  const [allSkillTools, activeSkillTools] = await Promise.all([
+    discoverSkillPackageTools(state.skills),
+    discoverSkillPackageTools(getEnabledSkillRecords(state, agentId)),
+  ]);
+
+  const previewContext: RuntimeContext = {
+    ...ctx,
+    runtimeSkillOwnedTools: new Set(
+      allSkillTools.map((item) => item.manifest.name),
+    ),
+    runtimeSkillToolNames: new Set(
+      activeSkillTools.map((item) => item.manifest.name),
+    ),
+  };
+
+  return getExecutableTools(previewContext, state, agentId);
 }
 
 // -----------------------------------------------------------------------------
@@ -424,6 +449,7 @@ app.get("/api/auth/me", (_request, response) => {
 app.get("/api/state", async (_request, response) => {
   const state = await readState(selectedModel);
   const runtimeSkills = buildRuntimePiSkills(state);
+  const runtimeTools = await previewExecutableTools(runtime, state);
 
   response.json({
     ...state,
@@ -435,7 +461,7 @@ app.get("/api/state", async (_request, response) => {
       model: modelLabel,
       busy: activeRuns.size > 0,
       status: activeRuns.size > 0 ? "running" : "idle",
-      tools: getExecutableTools(runtime, state),
+      tools: runtimeTools,
       skills: runtimeSkills.skills.map((skill) => ({
         name: skill.name,
         description: skill.description,
