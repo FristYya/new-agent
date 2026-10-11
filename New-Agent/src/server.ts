@@ -1,26 +1,34 @@
 import express from "express";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  createAgentSession,
-  DefaultResourceLoader,
   getAgentDir,
   loadSkills,
   ModelRuntime,
-  SessionManager,
-  type Skill,
 } from "@earendil-works/pi-coding-agent";
-import { auditExtension } from "./extensions/audit.ts";
-import { guardExtension } from "./extensions/guard.ts";
+import {
+  UserRegistry,
+  UserRegistryError,
+  type AuthUser,
+} from "./auth-users.ts";
 import { runtimeConfig } from "./config.ts";
 import type { ToolPolicyDecision } from "./policy/tool-policy.ts";
-import { ApprovalRegistry } from "./runtime/approval-registry.ts";
-import { safePreview } from "./security/redaction.ts";
 import {
-  createSkillToolDefinitions,
-  discoverSkillPackageTools,
-} from "./skill-tools.ts";
+  createRuntimeRegistry,
+  resetSession,
+  type RuntimeContext,
+} from "./runtime/runtime-context.ts";
+import { createSessionRuntime } from "./runtime/session-runtime.ts";
+import { safePreview } from "./security/redaction.ts";
+import { discoverSkillPackageTools } from "./skill-tools.ts";
+import {
+  closeMysqlStorage,
+  deletePiSession,
+  mysqlStorageHealth,
+  usesMysqlStorage,
+  verifyMysqlStorage,
+} from "./storage/mysql.ts";
 import {
   createRecord,
   deleteRecord,
@@ -71,35 +79,36 @@ const selectedModel = model;
 const modelLabel = `${selectedModel.provider}/${selectedModel.id}`;
 console.log(`New-Agent 使用模型：${modelLabel}`);
 
+// file 模式会跳过；MySQL 模式只校验连接和课前准备好的五张表。
+// 应用启动期间不会执行 CREATE DATABASE、CREATE TABLE 或结构迁移。
+await verifyMysqlStorage();
+console.log(`数据存储：${usesMysqlStorage() ? "MySQL" : runtimeConfig.storage}`);
+
+// 注册账号与 AppState 使用同一个持久化后端。
+// MySQL 模式写入独立 users 表；file 模式写入 data/auth-users.json。
+const users = await UserRegistry.create(
+  path.join(process.cwd(), "data", "auth-users.json"),
+);
+
+const AUTH_COOKIE = "new_agent_session";
+const AUTH_MAX_AGE_SECONDS = runtimeConfig.authMaxAgeSeconds;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+const REGISTRATION_WINDOW_MS = 15 * 60 * 1000;
+const REGISTRATION_MAX_ATTEMPTS = 5;
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const registrationAttempts = new Map<string, { count: number; resetAt: number }>();
+
+// runId 标识一次生成任务；conversationId 标识长期业务会话。
+// 审批回调和取消接口都通过这张表确认 run 属于哪个登录用户。
+const activeRuns = new Map<
+  string,
+  { conversationId: string; userId: string }
+>();
+
 // -----------------------------------------------------------------------------
 // 2. 运行时结构与 Skill/Tool 策略
 // -----------------------------------------------------------------------------
-
-type RuntimeContext = {
-  // ResourceLoader 负责把本节启用的 Skill 注入 Pi。
-  loader: DefaultResourceLoader;
-  // 第二节暂时只维护一个进程内 Session；会话树和持久化留到后续课程。
-  session?: Awaited<ReturnType<typeof createAgentSession>>["session"];
-  // 审批 Registry 让 guard 中暂停的 Tool 调用等待前端决定。
-  approvalRegistry: ApprovalRegistry;
-  // 聊天路由建立 SSE 后注入通知函数；没有活跃请求时为空。
-  approvalNotifier?: (approval: ApprovalRecord & { token: string }) => void;
-  // 当前运行标识用于把 Tool 审批关联到正确的 run 和 conversation。
-  activeRunId?: string;
-  activeConversationId?: string;
-  // 当前允许执行的 Tool 名称集合。
-  runtimeAllowedTools: Set<string>;
-  // 被当前 Agent 引用但状态不是 PROD 的 Skill/Tool 名称。
-  runtimeDisabledSkills: Set<string>;
-  // 当前真正交给 Pi 的 Skill。
-  runtimePiSkills: Skill[];
-  // Skill 加载诊断信息，供管理页排查配置问题。
-  runtimeSkillDiagnostics: unknown[];
-  // 当前 PROD Skill 实际注册的 Tool 名称。
-  runtimeSkillToolNames: Set<string>;
-  // 所有 Skill Package 拥有的 Tool 名称，用于阻止绕过 Skill 状态直接启用。
-  runtimeSkillOwnedTools: Set<string>;
-};
 
 // 相对路径统一以项目根目录为基准；绝对路径保持不变。
 function resolveSkillPath(installPath: string): string {
@@ -262,13 +271,13 @@ async function expireApproval(
   ctx: RuntimeContext,
   approvalId: string,
 ): Promise<void> {
-  const state = await readState(selectedModel);
+  const state = await readState(selectedModel, ctx.user.id);
   const approval = state.approvals.find((item) => item.id === approvalId);
   if (!approval || approval.status !== "pending") return;
 
   approval.status = "expired";
   approval.decidedAt = new Date().toISOString();
-  await writeState(state);
+  await writeState(state, ctx.user.id);
 }
 
 // guard 发现写入或破坏性操作时调用本函数，并等待用户决定。
@@ -278,9 +287,10 @@ async function requestToolApproval(
   decision: ToolPolicyDecision,
 ): Promise<boolean> {
   if (!ctx.activeRunId || !ctx.activeConversationId) return false;
-  if (!activeRuns.has(ctx.activeRunId)) return false;
+  const activeRun = activeRuns.get(ctx.activeRunId);
+  if (!activeRun || activeRun.userId !== ctx.user.id) return false;
 
-  const state = await readState(selectedModel);
+  const state = await readState(selectedModel, ctx.user.id);
   const createdAt = new Date();
   const approvalId = `approval_${randomUUID()}`;
   const pending = ctx.approvalRegistry.create(
@@ -311,57 +321,12 @@ async function requestToolApproval(
   state.approvals.unshift(approval);
   // 内存课程版本最多保留 500 条，避免列表无限增长。
   state.approvals = state.approvals.slice(0, 500);
-  await writeState(state);
+  await writeState(state, ctx.user.id);
 
   // 明文 token 只通过本次 SSE 交给前端；AppState 中只保存哈希。
   ctx.approvalNotifier?.({ ...approval, token: pending.token });
   return pending.promise;
 }
-
-function createRuntimeContext(): RuntimeContext {
-  // 先创建除 loader 以外的可变上下文。
-  const ctx = {
-    approvalRegistry: new ApprovalRegistry(),
-    runtimeAllowedTools: new Set<string>(CORE_TOOLS),
-    runtimeDisabledSkills: new Set<string>(),
-    runtimePiSkills: [],
-    runtimeSkillDiagnostics: [],
-    runtimeSkillToolNames: new Set<string>(),
-    runtimeSkillOwnedTools: new Set<string>(),
-  } as unknown as RuntimeContext;
-
-  ctx.loader = new DefaultResourceLoader({
-    cwd: process.cwd(),
-    agentDir: getAgentDir(),
-    // 禁止默认扫描 Skill；本节只接受 skillsOverride 提供的结果。
-    noSkills: true,
-    // 沿用第一节的系统提示词。
-    systemPromptOverride: () => readSystemPrompt(),
-    // 动态提示当前能力范围，降低模型尝试越权 Tool 的概率。
-    appendSystemPromptOverride: () => [buildRuntimePrompt(ctx)],
-    // 回调读取 ctx 的最新值，因此配置更新后 reload() 即可生效。
-    skillsOverride: () => ({
-      skills: ctx.runtimePiSkills,
-      diagnostics: ctx.runtimeSkillDiagnostics as any[],
-    }),
-    // guard 在 Tool 执行前拦截；audit 在执行开始/结束时记录脱敏日志。
-    extensionFactories: [
-      (pi: any) => guardExtension(
-        pi,
-        () => ({
-          allowedTools: ctx.runtimeAllowedTools,
-          disabledSkills: ctx.runtimeDisabledSkills,
-        }),
-        (event, decision) => requestToolApproval(ctx, event, decision),
-      ),
-      auditExtension,
-    ],
-  });
-
-  return ctx;
-}
-
-const runtime = createRuntimeContext();
 
 // 根据最新 AppState 重算 Skill、Tool 和 ResourceLoader 状态。
 async function applyRuntimePolicy(
@@ -398,52 +363,21 @@ async function applyRuntimePolicy(
   return executableTools;
 }
 
-async function createNewAgentSession(
-  ctx: RuntimeContext,
-  state: AppState,
-  conversation: ConversationRecord,
-) {
-  const executableTools = await applyRuntimePolicy(
-    ctx,
-    state,
-    conversation.agentId,
-  );
+// 用户级运行时注册表只负责 RuntimeContext 的创建、复用与统一释放。
+const runtimeRegistry = createRuntimeRegistry({
+  coreTools: CORE_TOOLS,
+  readSystemPrompt,
+  buildRuntimePrompt,
+  requestToolApproval,
+});
 
-  // 注册全部可信 Skill Tool。
-  // 是否允许模型调用，仍由 executableTools 白名单决定。
-  const allSkillTools = await discoverSkillPackageTools(state.skills);
-  const customTools = createSkillToolDefinitions(allSkillTools);
-  const allToolNames = [
-    ...new Set([
-      ...CORE_TOOLS,
-      ...allSkillTools.map((item) => item.manifest.name),
-    ]),
-  ];
-
-  const { session } = await createAgentSession({
-    cwd: process.cwd(),
-    model: selectedModel,
-    modelRuntime,
-    resourceLoader: ctx.loader,
-    // 第二节只要求进程内上下文；持久化 Session 在后续课程实现。
-    sessionManager: SessionManager.inMemory(process.cwd()),
-    customTools,
-    tools: allToolNames,
-  });
-
-  // 完成扩展绑定后，再应用当前 Agent 的最终 Tool 白名单。
-  await session.bindExtensions({ mode: "print" });
-  session.setActiveToolsByName(executableTools);
-  return session;
-}
-
-// Agent、Skill 或 Tool 配置变化后销毁旧 Session。
-// 下一条消息会根据最新配置懒加载一个新 Session。
-function resetSession(reason: string): void {
-  console.log(`重建 Session：${reason}`);
-  runtime.session?.dispose();
-  runtime.session = undefined;
-}
+// 会话运行时负责 AgentSession 的创建、恢复、切换和持久化。
+const { getConversationSession, persistPiSession } = createSessionRuntime({
+  coreTools: CORE_TOOLS,
+  model: selectedModel,
+  modelRuntime,
+  applyRuntimePolicy,
+});
 
 // -----------------------------------------------------------------------------
 // 4. Express、SSE 与通用辅助函数
@@ -452,12 +386,104 @@ function resetSession(reason: string): void {
 const app = express();
 const port = runtimeConfig.port;
 
-// runId 标识一次生成任务；conversationId 标识长期业务会话。
-const activeRuns = new Map<string, { conversationId: string }>();
-
 app.disable("x-powered-by");
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
+
+// 观测面板可以直接复用这个存储健康信号。
+app.get("/health", async (_request, response) => {
+  const storage = await mysqlStorageHealth();
+  response.status(storage.healthy ? 200 : 503).json({
+    ok: storage.healthy,
+    model: modelLabel,
+    storage,
+  });
+});
+
+function parseCookies(header?: string): Record<string, string> {
+  return Object.fromEntries(
+    String(header || "")
+      .split(";")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const index = item.indexOf("=");
+        return index >= 0
+          ? [item.slice(0, index), decodeURIComponent(item.slice(index + 1))]
+          : [item, ""];
+      }),
+  );
+}
+
+function cookieHeader(
+  name: string,
+  value: string,
+  maxAgeSeconds: number,
+): string {
+  const secure = runtimeConfig.authCookieSecure ? "; Secure" : "";
+  return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}${secure}`;
+}
+
+function signAuthPayload(payload: string): string {
+  return createHmac("sha256", runtimeConfig.authSecret)
+    .update(payload)
+    .digest("base64url");
+}
+
+function createAuthToken(user: AuthUser): string {
+  const expiresAt = Date.now() + AUTH_MAX_AGE_SECONDS * 1000;
+  // Cookie 只保存用户 ID 和过期时间，不保存密码或完整用户对象。
+  const payload = Buffer.from(
+    JSON.stringify({ userId: user.id, expiresAt }),
+    "utf-8",
+  ).toString("base64url");
+  return `${payload}.${signAuthPayload(payload)}`;
+}
+
+function parseAuthToken(token: string): AuthUser | undefined {
+  try {
+    const [payload, signature] = token.split(".");
+    if (!payload || !signature) return undefined;
+
+    const expected = Buffer.from(signAuthPayload(payload));
+    const actual = Buffer.from(signature);
+    if (
+      expected.length !== actual.length ||
+      !timingSafeEqual(expected, actual)
+    ) return undefined;
+
+    const data = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf-8"),
+    ) as { userId?: string; expiresAt?: number };
+    if (!data.userId || !data.expiresAt || data.expiresAt < Date.now()) {
+      return undefined;
+    }
+
+    const user = users.findById(data.userId);
+    return user
+      ? {
+          id: user.id,
+          username: user.username,
+          displayName: user.displayName,
+        }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getAuthUser(request: express.Request): AuthUser | undefined {
+  const token = parseCookies(request.headers.cookie)[AUTH_COOKIE];
+  return token ? parseAuthToken(token) : undefined;
+}
+
+function requestUser(response: express.Response): AuthUser {
+  return response.locals.user as AuthUser;
+}
+
+function requestRuntime(response: express.Response): RuntimeContext {
+  return response.locals.runtime as RuntimeContext;
+}
 
 // 生成一帧符合 SSE 协议的字符串。
 function sse(event: string, data: unknown): string {
@@ -557,22 +583,137 @@ function translateEvent(event: any): string | null {
 // 5. 基础接口与运行状态
 // -----------------------------------------------------------------------------
 
-// 第二节继续使用固定演示用户，不引入登录业务。
-app.get("/api/auth/me", (_request, response) => {
-  response.json({
-    user: {
-      id: "course-user",
-      username: "student",
-      displayName: "课程学员",
-    },
-  });
+app.get("/api/auth/me", (request, response) => {
+  const user = getAuthUser(request);
+  if (!user) return response.status(401).json({ error: "未登录" });
+  response.json({ user });
+});
+
+app.post("/api/auth/register", async (request, response) => {
+  const username = String(request.body?.username || "").trim();
+  const password = String(request.body?.password || "");
+  const displayName = String(request.body?.displayName || username).trim();
+  const attemptKey = `${request.ip}:${username.toLocaleLowerCase()}`;
+  const currentTime = Date.now();
+  const previous = registrationAttempts.get(attemptKey);
+  const attempt = !previous || previous.resetAt <= currentTime
+    ? { count: 0, resetAt: currentTime + REGISTRATION_WINDOW_MS }
+    : previous;
+
+  if (attempt.count >= REGISTRATION_MAX_ATTEMPTS) {
+    response.setHeader(
+      "Retry-After",
+      String(Math.ceil((attempt.resetAt - currentTime) / 1000)),
+    );
+    return response.status(429).json({ error: "注册尝试过多，请稍后再试" });
+  }
+
+  try {
+    const user = await users.register(username, password, displayName);
+    registrationAttempts.delete(attemptKey);
+    const token = createAuthToken(user);
+    runtimeRegistry.getRuntime(user);
+    response.setHeader(
+      "Set-Cookie",
+      cookieHeader(AUTH_COOKIE, token, AUTH_MAX_AGE_SECONDS),
+    );
+    return response.status(201).json({ user });
+  } catch (error) {
+    attempt.count += 1;
+    registrationAttempts.set(attemptKey, attempt);
+
+    if (error instanceof UserRegistryError) {
+      return response.status(error.statusCode).json({ error: error.message });
+    }
+    console.error("注册用户失败", error);
+    return response.status(500).json({ error: "注册失败，请稍后重试" });
+  }
+});
+
+app.post("/api/auth/login", async (request, response) => {
+  const username = String(request.body?.username || "").trim();
+  const password = String(request.body?.password || "");
+
+  if (!username || username.length > 64 || !password || password.length > 128) {
+    return response.status(400).json({ error: "用户名或密码格式不正确" });
+  }
+
+  // 防止攻击者用大量不同用户名无限撑大进程内限流表。
+  if (loginAttempts.size > 1_000) {
+    const currentTime = Date.now();
+    for (const [key, value] of loginAttempts) {
+      if (value.resetAt <= currentTime) loginAttempts.delete(key);
+    }
+  }
+
+  const attemptKey = `${request.ip}:${username}`;
+  const currentTime = Date.now();
+  const previous = loginAttempts.get(attemptKey);
+  const attempt = !previous || previous.resetAt <= currentTime
+    ? { count: 0, resetAt: currentTime + LOGIN_WINDOW_MS }
+    : previous;
+
+  if (attempt.count >= LOGIN_MAX_ATTEMPTS) {
+    response.setHeader(
+      "Retry-After",
+      String(Math.ceil((attempt.resetAt - currentTime) / 1000)),
+    );
+    return response.status(429).json({ error: "登录尝试过多，请稍后再试" });
+  }
+
+  const credential = users.findByUsername(username);
+  if (!credential || !(await users.verifyPassword(credential, password))) {
+    attempt.count += 1;
+    loginAttempts.set(attemptKey, attempt);
+    return response.status(401).json({ error: "用户名或密码错误" });
+  }
+
+  loginAttempts.delete(attemptKey);
+  const user: AuthUser = {
+    id: credential.id,
+    username: credential.username,
+    displayName: credential.displayName,
+  };
+  const token = createAuthToken(user);
+  runtimeRegistry.getRuntime(user);
+  response.setHeader(
+    "Set-Cookie",
+    cookieHeader(AUTH_COOKIE, token, AUTH_MAX_AGE_SECONDS),
+  );
+  response.json({ user });
+});
+
+app.post("/api/auth/logout", (_request, response) => {
+  response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, "", 0));
+  response.json({ ok: true });
+});
+
+// 认证接口保持公开；从这里开始，所有业务 API 与聊天请求都必须登录。
+app.use((request, response, next) => {
+  const isProtectedPath =
+    request.path === "/chat" || request.path.startsWith("/api/");
+  if (!isProtectedPath) return next();
+
+  const user = getAuthUser(request);
+  if (!user) {
+    return response.status(401).json({ error: "请先登录 New-Agent" });
+  }
+
+  response.locals.user = user;
+  response.locals.runtime = runtimeRegistry.getRuntime(user);
+  next();
 });
 
 // 返回管理页面状态，并附带 Pi 当前真实加载的 Skill/Tool 信息。
 app.get("/api/state", async (_request, response) => {
-  const state = await readState(selectedModel);
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
+  const state = await readState(selectedModel, user.id);
   const runtimeSkills = buildRuntimePiSkills(state);
   const runtimeTools = await previewExecutableTools(runtime, state);
+  const busy = Boolean(
+    runtime.activeRunId && activeRuns.has(runtime.activeRunId),
+  );
 
   response.json({
     ...state,
@@ -582,8 +723,8 @@ app.get("/api/state", async (_request, response) => {
     observability: { runs: [] },
     runtime: {
       model: modelLabel,
-      busy: activeRuns.size > 0,
-      status: activeRuns.size > 0 ? "running" : "idle",
+      busy,
+      status: busy ? "running" : "idle",
       tools: runtimeTools,
       skills: runtimeSkills.skills.map((skill) => ({
         name: skill.name,
@@ -630,22 +771,27 @@ function registerCrud<
 ): void {
   // 查询列表。
   app.get(route, async (_request, response) => {
-    const state = await readState(selectedModel);
+    const user = requestUser(response);
+    const state = await readState(selectedModel, user.id);
     response.json(state[key]);
   });
 
   // 新增记录，并在保存后让旧 Session 失效。
   app.post(route, async (request, response) => {
-    const state = await readState(selectedModel);
+    const user = requestUser(response);
+    const runtime = requestRuntime(response);
+    const state = await readState(selectedModel, user.id);
     const record = createRecord(state[key] as T[], prefix, request.body);
-    await writeState(state);
-    resetSession(`${key} 配置新增`);
+    await writeState(state, user.id);
+    resetSession(runtime, `${key} 配置新增`);
     response.status(201).json(record);
   });
 
   // 修改记录；找不到 id 时返回 404。
   app.put(`${route}/:id`, async (request, response) => {
-    const state = await readState(selectedModel);
+    const user = requestUser(response);
+    const runtime = requestRuntime(response);
+    const state = await readState(selectedModel, user.id);
     const record = updateRecord(
       state[key] as T[],
       request.params.id,
@@ -656,22 +802,24 @@ function registerCrud<
       return response.status(404).json({ error: "记录不存在" });
     }
 
-    await writeState(state);
-    resetSession(`${key} 配置变更`);
+    await writeState(state, user.id);
+    resetSession(runtime, `${key} 配置变更`);
     response.json(record);
   });
 
   // 删除记录；删除成功后同样重建 Session。
   app.delete(`${route}/:id`, async (request, response) => {
-    const state = await readState(selectedModel);
+    const user = requestUser(response);
+    const runtime = requestRuntime(response);
+    const state = await readState(selectedModel, user.id);
     const deleted = deleteRecord(state[key] as T[], request.params.id);
 
     if (!deleted) {
       return response.status(404).json({ error: "记录不存在" });
     }
 
-    await writeState(state);
-    resetSession(`${key} 配置删除`);
+    await writeState(state, user.id);
+    resetSession(runtime, `${key} 配置删除`);
     response.json({ ok: true });
   });
 }
@@ -685,7 +833,8 @@ registerCrud<ToolRecord>("/api/tools", "tools", "tool");
 // -----------------------------------------------------------------------------
 
 app.post("/api/conversations", async (request, response) => {
-  const state = await readState(selectedModel);
+  const user = requestUser(response);
+  const state = await readState(selectedModel, user.id);
   const activeAgent = getActiveAgent(state, request.body?.agentId);
   const title = String(request.body?.title || "新会话").trim() || "新会话";
 
@@ -700,12 +849,13 @@ app.post("/api/conversations", async (request, response) => {
     },
   );
 
-  await writeState(state);
+  await writeState(state, user.id);
   response.status(201).json(record);
 });
 
 app.get("/api/conversations/:id", async (request, response) => {
-  const state = await readState(selectedModel);
+  const user = requestUser(response);
+  const state = await readState(selectedModel, user.id);
   const conversation = state.conversations.find(
     (item) => item.id === request.params.id,
   );
@@ -717,9 +867,59 @@ app.get("/api/conversations/:id", async (request, response) => {
   response.json(conversation);
 });
 
+app.put("/api/conversations/:id", async (request, response) => {
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
+  const state = await readState(selectedModel, user.id);
+  const conversation = updateRecord(
+    state.conversations,
+    request.params.id,
+    request.body,
+  );
+
+  if (!conversation) {
+    return response.status(404).json({ error: "会话不存在" });
+  }
+
+  await writeState(state, user.id);
+
+  // 同一会话换 Agent 后，原 Session 的 Skill/Tool 组合已经不再适用。
+  if (
+    runtime.activeConversationId === conversation.id &&
+    runtime.activeAgentId !== conversation.agentId
+  ) {
+    resetSession(runtime, "会话绑定 Agent 变更");
+  }
+
+  response.json(conversation);
+});
+
+app.delete("/api/conversations/:id", async (request, response) => {
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
+  const state = await readState(selectedModel, user.id);
+  const deleted = deleteRecord(state.conversations, request.params.id);
+
+  if (!deleted) {
+    return response.status(404).json({ error: "会话不存在" });
+  }
+
+  await writeState(state, user.id);
+  // file 模式会跳过；MySQL 模式同步删除会话树，避免孤儿数据。
+  await deletePiSession(user.id, request.params.id);
+
+  if (runtime.activeConversationId === request.params.id) {
+    resetSession(runtime, "当前会话已删除");
+  }
+
+  response.json({ ok: true });
+});
+
 // 查询审批记录。待审批 token 每次查询都会轮换，旧页面中的 token 随即失效。
 app.get("/api/approvals", async (request, response) => {
-  const state = await readState(selectedModel);
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
+  const state = await readState(selectedModel, user.id);
   const requestedStatus =
     typeof request.query.status === "string"
       ? request.query.status
@@ -739,12 +939,14 @@ app.get("/api/approvals", async (request, response) => {
     return { ...approval, token: rotated.token };
   });
 
-  if (changed) await writeState(state);
+  if (changed) await writeState(state, user.id);
   response.json({ approvals: result });
 });
 
 // 提交批准或拒绝。approvalId 和一次性 token 必须同时匹配。
 app.post("/api/approvals/:id/decision", async (request, response) => {
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
   const decision = request.body?.decision;
   const token = String(request.body?.token || "");
 
@@ -760,7 +962,7 @@ app.post("/api/approvals/:id/decision", async (request, response) => {
     });
   }
 
-  const state = await readState(selectedModel);
+  const state = await readState(selectedModel, user.id);
   const approval = state.approvals.find(
     (item) => item.id === request.params.id,
   );
@@ -771,8 +973,8 @@ app.post("/api/approvals/:id/decision", async (request, response) => {
 
   approval.status = decision;
   approval.decidedAt = new Date().toISOString();
-  approval.decidedBy = "course-user";
-  await writeState(state);
+  approval.decidedBy = user.id;
+  await writeState(state, user.id);
 
   // 最后才恢复 guard 中等待的 Promise；批准返回 true，拒绝返回 false。
   runtime.approvalRegistry.decide(
@@ -787,9 +989,13 @@ app.post("/api/approvals/:id/decision", async (request, response) => {
 });
 
 // 将某次运行仍在等待的审批记录统一标记为取消。
-async function cancelApprovalsForRun(runId: string): Promise<void> {
+async function cancelApprovalsForRun(
+  runtime: RuntimeContext,
+  user: AuthUser,
+  runId: string,
+): Promise<void> {
   runtime.approvalRegistry.cancelRun(runId);
-  const state = await readState(selectedModel);
+  const state = await readState(selectedModel, user.id);
   let changed = false;
 
   for (const approval of state.approvals) {
@@ -799,17 +1005,19 @@ async function cancelApprovalsForRun(runId: string): Promise<void> {
     changed = true;
   }
 
-  if (changed) await writeState(state);
+  if (changed) await writeState(state, user.id);
 }
 
 // 取消指定 runId 对应的当前生成。
 app.post("/api/runs/:runId/cancel", async (request, response) => {
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
   const run = activeRuns.get(request.params.runId);
-  if (!run || !runtime.session) {
+  if (!run || run.userId !== user.id || !runtime.session) {
     return response.status(404).json({ error: "运行不存在或已经结束" });
   }
 
-  await cancelApprovalsForRun(request.params.runId);
+  await cancelApprovalsForRun(runtime, user, request.params.runId);
   await runtime.session.abort();
   response.json({ ok: true });
 });
@@ -819,6 +1027,8 @@ app.post("/api/runs/:runId/cancel", async (request, response) => {
 // -----------------------------------------------------------------------------
 
 app.post("/chat", async (request, response) => {
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
   const message = String(request.body?.message || "").trim();
   const conversationId = String(
     request.body?.conversationId || "",
@@ -830,12 +1040,12 @@ app.post("/chat", async (request, response) => {
   if (!conversationId) {
     return response.status(400).json({ error: "conversationId 不能为空" });
   }
-  if (activeRuns.size > 0) {
+  if (runtime.activeRunId && activeRuns.has(runtime.activeRunId)) {
     return response.status(429).json({ error: "Agent 正忙，请稍后再试" });
   }
 
   // 每次请求都读取最新状态，避免使用管理页面修改前的旧快照。
-  const state = await readState(selectedModel);
+  const state = await readState(selectedModel, user.id);
   const conversation = state.conversations.find(
     (item) => item.id === conversationId,
   );
@@ -844,31 +1054,29 @@ app.post("/chat", async (request, response) => {
     return response.status(404).json({ error: "会话不存在" });
   }
 
-  // 在发送 SSE 响应头之前初始化 Session。
-  // 这样模型或 Skill 配置错误仍可返回普通 JSON 错误。
+  // 使用局部变量锁定本次与 conversationId 匹配的 Session。
+  let session;
   try {
-    if (!runtime.session) {
-      runtime.session = await createNewAgentSession(
-        runtime,
-        state,
-        conversation,
-      );
-    }
+    // 同一会话复用；切换会话或进程重启后从持久化数据恢复。
+    session = await getConversationSession(
+      runtime,
+      state,
+      conversation,
+      user.id,
+    );
   } catch (error) {
     const text = error instanceof Error ? error.message : "会话初始化失败";
     return response.status(500).json({ error: text });
   }
 
-  const session = runtime.session;
   const runId = randomUUID();
   let clientClosed = false;
   let assistantText = "";
 
-  activeRuns.set(runId, { conversationId });
+  activeRuns.set(runId, { conversationId, userId: user.id });
   runtime.activeRunId = runId;
-  runtime.activeConversationId = conversationId;
   appendConversationMessage(conversation, "user", message);
-  await writeState(state);
+  await writeState(state, user.id);
 
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -909,7 +1117,7 @@ app.post("/chat", async (request, response) => {
   response.on("close", () => {
     if (!response.writableEnded) {
       clientClosed = true;
-      void cancelApprovalsForRun(runId);
+      void cancelApprovalsForRun(runtime, user, runId);
       void session.abort();
     }
   });
@@ -921,13 +1129,13 @@ app.post("/chat", async (request, response) => {
 
     // 审批接口会在 Tool 等待期间更新 AppState。
     // 因此这里重新读取最新状态，避免用聊天开始时的旧快照覆盖审批结果。
-    const latestState = await readState(selectedModel);
+    const latestState = await readState(selectedModel, user.id);
     const latestConversation = latestState.conversations.find(
       (item) => item.id === conversation.id,
     );
     if (latestConversation) {
       appendConversationMessage(latestConversation, "assistant", finalText);
-      await writeState(latestState);
+      await writeState(latestState, user.id);
     }
 
     if (!clientClosed) {
@@ -944,11 +1152,22 @@ app.post("/chat", async (request, response) => {
     }
   } finally {
     unsubscribe();
+
+    // 无论本轮成功、失败还是取消，都保存已经产生的完整 Pi entries。
+    try {
+      await persistPiSession(user.id, conversation, session);
+    } catch (error) {
+      console.error(
+        "[pi-session:persist-error]",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
     activeRuns.delete(runId);
     if (runtime.activeRunId === runId) {
       runtime.activeRunId = undefined;
-      runtime.activeConversationId = undefined;
       runtime.approvalNotifier = undefined;
+      // activeConversationId/activeAgentId 描述缓存 Session 的归属，不能在这里清空。
     }
     if (!clientClosed) response.end();
   }
@@ -964,9 +1183,11 @@ const server = app.listen(port, () => {
 
 function shutdown(signal: string): void {
   console.log(`收到 ${signal}，正在释放会话资源`);
-  runtime.session?.dispose();
-  runtime.session = undefined;
-  server.close(() => process.exit(0));
+  runtimeRegistry.disposeAll();
+  server.close(() => {
+    // 等连接池正常关闭后再退出，避免丢失仍在完成中的数据库操作。
+    void closeMysqlStorage().finally(() => process.exit(0));
+  });
 }
 
 process.once("SIGINT", () => shutdown("SIGINT"));

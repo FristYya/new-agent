@@ -38,4 +38,42 @@ export const runtimeConfig = {
         5 * 60 * 1000,
         "APPROVAL_TIMEOUT_MS",
     ),
+
+    // mysql 配置
+    storage: process.env.NEW_AGENT_STORAGE?.toLowerCase() === "file"
+        ? "file"
+        : "mysql",
+
+    mysql: {
+        host: process.env.MYSQL_HOST || "127.0.0.1",
+        port: positiveInteger(process.env.MYSQL_PORT, 3306, "MYSQL_PORT"),
+        database: process.env.MYSQL_DATABASE || "new_agent",
+        user: process.env.MYSQL_USER || "root",
+        password: process.env.MYSQL_PASSWORD || "b2535abbc080c621a129f55ac81ba09e",
+        connectionLimit: positiveInteger(
+            process.env.MYSQL_CONNECTION_LIMIT,
+            10,
+            "MYSQL_CONNECTION_LIMIT",
+        ),
+        connectionTimeoutMs: positiveInteger(
+            process.env.MYSQL_CONNECT_TIMEOUT_MS,
+            5000,
+            "MYSQL_CONNECT_TIMEOUT_MS",
+        ),
+    },
+
+    // 登录 cookie 的签名秘钥
+    authSecret:
+        process.env.AUTH_SECRET || 
+        "new-agent-course-auth-secret-change-in-production",
+
+    authCookieSecure:
+        process.env.AUTH_COOKIE_SECURE?.toLocaleLowerCase() === "true",
+
+    // Cookie 的有效期
+    authMaxAgeSeconds: positiveInteger(
+        process.env.AUTH_MAX_AGE_SECONDS,
+        7 * 24 * 60 * 60,
+        "AUTH_MAX_AGE_SECONDS",
+    ),
 } as const;
