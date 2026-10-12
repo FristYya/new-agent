@@ -20,6 +20,10 @@ import {
   // 一轮执行结束后，把完整 Pi entries 保存到 MySQL。
   persistPiSession,
 } from "./session-storage.ts";
+import {
+  buildActiveConversationMessages,
+  buildSessionTreeSnapshot,
+} from "./session-tree.ts";
 
 /**
  * 服务启动时最终选中的模型类型。
@@ -179,9 +183,80 @@ export function createSessionRuntime(options: SessionRuntimeOptions) {
     return context.session;
   }
 
-  // HTTP 层只依赖这两个公开函数：获取/切换 Session，以及保存 Pi entries。
+  /** 读取指定业务会话的 Pi 树；返回值已去除 Tool 参数等敏感原始内容。 */
+  async function getConversationTree(
+    context: RuntimeContext,
+    state: AppState,
+    conversation: ConversationRecord,
+    ownerId: string,
+  ) {
+    const session = await getConversationSession(
+      context,
+      state,
+      conversation,
+      ownerId,
+    );
+    const tree = buildSessionTreeSnapshot(session);
+
+    // 首次打开一条空会话的树也会创建 Pi Session。
+    // 在这里同步 piSessionFile/piSessionId/piLeafId，避免重启后丢失定位信息。
+    await persistPiSession(ownerId, conversation, session);
+    return tree;
+  }
+
+  /**
+   * 使用 Pi SDK 在同一个 Session 内切换树节点。
+   * 选择历史节点后，下一次 prompt 会从该节点继续，从而自然形成新分支。
+   */
+  async function navigateConversationTree(
+    context: RuntimeContext,
+    state: AppState,
+    conversation: ConversationRecord,
+    ownerId: string,
+    targetId: string,
+    summarize: boolean,
+  ) {
+    const session = await getConversationSession(
+      context,
+      state,
+      conversation,
+      ownerId,
+    );
+
+    // 先在当前用户、当前业务会话的 SessionManager 中校验节点，
+    // 防止把其他用户或其他会话的 entry id 传给 SDK。
+    if (!session.sessionManager.getEntry(targetId)) {
+      throw new Error("会话树节点不存在");
+    }
+
+    const result = await session.navigateTree(targetId, { summarize });
+    if (result.cancelled) {
+      return {
+        cancelled: true,
+        editorText: result.editorText,
+        tree: buildSessionTreeSnapshot(session),
+      };
+    }
+
+    // 页面消息只是 Pi 当前分支的投影。切换后立即重建，不能继续展示旧分支。
+    conversation.messages = buildActiveConversationMessages(session);
+    conversation.updatedAt = new Date().toISOString();
+
+    // MySQL 模式保存完整 entries；两种模式都会把当前 leaf 写回 piLeafId。
+    await persistPiSession(ownerId, conversation, session);
+
+    return {
+      cancelled: false,
+      editorText: result.editorText,
+      tree: buildSessionTreeSnapshot(session),
+    };
+  }
+
+  // HTTP 层通过这些函数使用 Session，不直接操作 Pi 的内部树结构。
   return {
     getConversationSession,
+    getConversationTree,
+    navigateConversationTree,
     persistPiSession,
   };
 }

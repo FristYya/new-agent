@@ -22,6 +22,36 @@ import type { ConversationRecord } from "../store.ts";
 import type { AgentSession } from "./runtime-context.ts";
 
 /**
+ * 恢复业务会话上次选中的 Pi 树叶子。
+ *
+ * JSONL 和 entries_json 保存整棵追加式树，但没有独立保存“当前叶子”的游标。
+ * 因此只有 ConversationRecord 明确存在 piLeafId 时才覆盖 SDK 的默认叶子：
+ * - string：恢复到该节点；
+ * - null：恢复到根节点之前；
+ * - undefined：兼容旧数据，继续使用 SDK 默认的最后一条 entry。
+ */
+export function restoreConversationLeaf(
+  manager: SessionManager,
+  conversation: ConversationRecord,
+): SessionManager {
+  if (!("piLeafId" in conversation)) return manager;
+
+  if (conversation.piLeafId === null) {
+    manager.resetLeaf();
+    return manager;
+  }
+
+  if (
+    typeof conversation.piLeafId === "string" &&
+    manager.getEntry(conversation.piLeafId)
+  ) {
+    manager.branch(conversation.piLeafId);
+  }
+
+  return manager;
+}
+
+/**
  * 为每个用户计算受控的 Pi JSONL 目录。
  *
  * file 模式下，每个用户拥有自己的 data/pi-sessions/<ownerId> 目录，
@@ -58,10 +88,13 @@ export async function conversationSessionManager(
     if (stored) {
       // 数据库已有记录时，用保存的 sessionId 和 entries 恢复内存 SessionManager。
       // inMemory() 不会再写 JSONL，本轮结束后由 persistPiSession() 回写数据库。
-      return SessionManager.inMemory(
-        process.cwd(),
-        { id: stored.sessionId },
-        stored.entries,
+      return restoreConversationLeaf(
+        SessionManager.inMemory(
+          process.cwd(),
+          { id: stored.sessionId },
+          stored.entries,
+        ),
+        conversation,
       );
     }
 
@@ -90,10 +123,13 @@ export async function conversationSessionManager(
           conversation.piSessionId = header.id;
           // 迁移完成后清空文件定位信息，后续不再重复读取旧 JSONL。
           conversation.piSessionFile = undefined;
-          return SessionManager.inMemory(
-            process.cwd(),
-            { id: header.id },
-            entries,
+          return restoreConversationLeaf(
+            SessionManager.inMemory(
+              process.cwd(),
+              { id: header.id },
+              entries,
+            ),
+            conversation,
           );
         }
       } catch (error: any) {
@@ -105,13 +141,19 @@ export async function conversationSessionManager(
 
     // MySQL 中没有历史记录，也没有可迁移文件时，先创建空的内存 SessionManager。
     // 第一轮对话结束后，persistPiSession() 会把生成的 header 和 entries 写入数据库。
-    return SessionManager.inMemory(process.cwd());
+    return restoreConversationLeaf(
+      SessionManager.inMemory(process.cwd()),
+      conversation,
+    );
   }
 
   // 下面是 file 模式：ConversationRecord 没有关联旧文件时，
   // 让 Pi SDK 在当前用户的受控目录中创建新的 JSONL。
   if (!conversation.piSessionFile) {
-    return SessionManager.create(process.cwd(), sessionDir);
+    return restoreConversationLeaf(
+      SessionManager.create(process.cwd(), sessionDir),
+      conversation,
+    );
   }
 
   // 已有关联文件时，同样先解析成绝对路径并校验目录边界。
@@ -121,7 +163,10 @@ export async function conversationSessionManager(
     throw new Error("会话关联的 Pi Session 路径非法");
   }
   // 路径合法后，交给 Pi SDK 打开原 JSONL 并恢复上下文树。
-  return SessionManager.open(requested, sessionDir, process.cwd());
+  return restoreConversationLeaf(
+    SessionManager.open(requested, sessionDir, process.cwd()),
+    conversation,
+  );
 }
 
 /**
@@ -133,11 +178,24 @@ export async function persistPiSession(
   conversation: ConversationRecord,
   session: AgentSession,
 ): Promise<string | undefined> {
-  // file 模式由 Pi SDK 自己持续写 JSONL，不需要在这里重复保存。
-  if (!usesMysqlStorage()) return undefined;
-
   // AgentSession 内部持有本轮实际使用的 SessionManager。
   const manager = session.sessionManager;
+  // 当前叶子不属于普通 entries 的持久化内容，必须回写业务会话。
+  // 即使叶子为 null 也要保留，因为它表示用户切换到了第一条消息之前。
+  conversation.piLeafId = manager.getLeafId();
+
+  // file 模式由 Pi SDK 自己持续写 JSONL；这里仍要同步文件路径，
+  // 因为“首次打开会话树”也可能是创建 Session 的第一个操作。
+  if (!usesMysqlStorage()) {
+    conversation.piSessionFile = session.sessionFile;
+    conversation.piSessionId = undefined;
+    return undefined;
+  }
+
+  // MySQL 模式不应残留旧 JSONL 路径；Session ID 可直接从 Manager 获取。
+  conversation.piSessionId = manager.getSessionId();
+  conversation.piSessionFile = undefined;
+
   // header 保存 session id 等根信息；还没产生 header 时没有可持久化内容。
   const header = manager.getHeader();
   if (!header) return undefined;
@@ -147,7 +205,5 @@ export async function persistPiSession(
   const entries: FileEntry[] = [header, ...manager.getEntries()];
   // 使用 ownerId + conversation.id 做隔离键，把本轮完整快照写入 MySQL。
   await writePiSession(ownerId, conversation.id, header.id, entries);
-  // 同步更新业务会话中的 Pi session id，随后由 writeState() 保存 AppState。
-  conversation.piSessionId = header.id;
   return header.id;
 }

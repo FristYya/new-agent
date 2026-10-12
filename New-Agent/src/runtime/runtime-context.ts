@@ -29,6 +29,8 @@ export type RuntimeContext = {
   approvalRegistry: ApprovalRegistry;
   approvalNotifier?: (approval: ApprovalRecord & { token: string }) => void;
   activeRunId?: string;
+  // 树读取/摘要/切换期间阻止新的 prompt 或第二次导航并发修改同一个 Session。
+  treeNavigationInProgress?: boolean;
   activeConversationId?: string;
   activeAgentId?: string;
   runtimeAllowedTools: Set<string>;

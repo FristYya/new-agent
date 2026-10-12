@@ -70,6 +70,9 @@ export type ConversationRecord = {
   piSessionFile?: string;
   // MySQL 模式保存稳定 Session ID，完整 entries 位于 pi_sessions 表。
   piSessionId?: string;
+  // Pi entries 只保存树结构，不单独记录当前停留的叶子；此字段用于重启后恢复分支位置。
+  // null 表示位于树根之前，undefined 表示旧数据尚未记录过叶子位置。
+  piLeafId?: string | null;
   // 页面展示消息与 Pi Session 分开保存，不能用它重建模型上下文。
   messages: ConversationMessage[];
   createdAt: string;
@@ -297,8 +300,8 @@ export async function readState(
 
     return clone(snapshot);
   } catch (error: any) {
-    // ENDENT：当前 owner 没有这个json
-    if (error?.code !== "ENDENT") {
+    // ENOENT：当前 owner 还没有状态文件，下面会用 defaultState 初始化。
+    if (error?.code !== "ENOENT") {
       throw new Error(
         `读取 AppState 失败：${error?.message ?? String(error)}`,
       );

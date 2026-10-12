@@ -372,7 +372,12 @@ const runtimeRegistry = createRuntimeRegistry({
 });
 
 // 会话运行时负责 AgentSession 的创建、恢复、切换和持久化。
-const { getConversationSession, persistPiSession } = createSessionRuntime({
+const {
+  getConversationSession,
+  getConversationTree,
+  navigateConversationTree,
+  persistPiSession,
+} = createSessionRuntime({
   coreTools: CORE_TOOLS,
   model: selectedModel,
   modelRuntime,
@@ -867,6 +872,103 @@ app.get("/api/conversations/:id", async (request, response) => {
   response.json(conversation);
 });
 
+// 读取同一个 Pi Session 内的完整分支树。
+// 返回的是经过裁剪的展示数据，不会把 Tool 输入和结果原文发送到浏览器。
+app.get("/api/conversations/:id/tree", async (request, response) => {
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
+
+  // 树导航会修改 Session 的当前叶子；生成过程中不允许并发读取/切换另一棵树。
+  if (
+    runtime.treeNavigationInProgress ||
+    (runtime.activeRunId && activeRuns.has(runtime.activeRunId))
+  ) {
+    return response.status(409).json({ error: "Agent 正在执行，完成或停止后再查看会话树" });
+  }
+
+  const state = await readState(selectedModel, user.id);
+  const conversation = state.conversations.find(
+    (item) => item.id === request.params.id,
+  );
+  if (!conversation) {
+    return response.status(404).json({ error: "会话不存在" });
+  }
+
+  runtime.treeNavigationInProgress = true;
+  try {
+    const tree = await getConversationTree(
+      runtime,
+      state,
+      conversation,
+      user.id,
+    );
+    // getConversationTree 可能首次创建 Pi Session，需要保存它的定位信息。
+    await writeState(state, user.id);
+    response.json(tree);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "读取会话树失败";
+    response.status(500).json({ error: message });
+  } finally {
+    runtime.treeNavigationInProgress = false;
+  }
+});
+
+// 切换到同一个 Pi Session 的历史节点。
+// 后续再次发送消息时，Pi 会从该节点继续追加并形成新分支。
+app.post("/api/conversations/:id/tree/navigate", async (request, response) => {
+  const user = requestUser(response);
+  const runtime = requestRuntime(response);
+  const targetId = String(request.body?.targetId || "").trim();
+  const summarize = request.body?.summarize === true;
+
+  if (!targetId || targetId.length > 200) {
+    return response.status(400).json({ error: "targetId 不合法" });
+  }
+  if (
+    runtime.treeNavigationInProgress ||
+    (runtime.activeRunId && activeRuns.has(runtime.activeRunId))
+  ) {
+    return response.status(409).json({ error: "Agent 正在执行，不能切换会话树" });
+  }
+
+  const state = await readState(selectedModel, user.id);
+  const conversation = state.conversations.find(
+    (item) => item.id === request.params.id,
+  );
+  if (!conversation) {
+    return response.status(404).json({ error: "会话不存在" });
+  }
+
+  runtime.treeNavigationInProgress = true;
+  try {
+    const result = await navigateConversationTree(
+      runtime,
+      state,
+      conversation,
+      user.id,
+      targetId,
+      summarize,
+    );
+    if (result.cancelled) {
+      return response.status(409).json({ error: "会话树切换已被扩展取消" });
+    }
+
+    // 保存 active branch 的页面消息投影和 piLeafId；Pi entries 已由运行时持久化。
+    await writeState(state, user.id);
+    response.json({
+      conversation,
+      tree: result.tree,
+      editorText: result.editorText,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "切换会话树失败";
+    const status = message === "会话树节点不存在" ? 404 : 409;
+    response.status(status).json({ error: message });
+  } finally {
+    runtime.treeNavigationInProgress = false;
+  }
+});
+
 app.put("/api/conversations/:id", async (request, response) => {
   const user = requestUser(response);
   const runtime = requestRuntime(response);
@@ -1043,6 +1145,9 @@ app.post("/chat", async (request, response) => {
   if (runtime.activeRunId && activeRuns.has(runtime.activeRunId)) {
     return response.status(429).json({ error: "Agent 正忙，请稍后再试" });
   }
+  if (runtime.treeNavigationInProgress) {
+    return response.status(409).json({ error: "会话树正在读取或切换，请稍后再试" });
+  }
 
   // 每次请求都读取最新状态，避免使用管理页面修改前的旧快照。
   const state = await readState(selectedModel, user.id);
@@ -1134,6 +1239,8 @@ app.post("/chat", async (request, response) => {
       (item) => item.id === conversation.id,
     );
     if (latestConversation) {
+      // 先保存 Pi 树并同步 piLeafId，再写页面消息，保证 done 事件发出前数据已落库。
+      await persistPiSession(user.id, latestConversation, session);
       appendConversationMessage(latestConversation, "assistant", finalText);
       await writeState(latestState, user.id);
     }
@@ -1153,9 +1260,16 @@ app.post("/chat", async (request, response) => {
   } finally {
     unsubscribe();
 
-    // 无论本轮成功、失败还是取消，都保存已经产生的完整 Pi entries。
+    // 无论本轮成功、失败还是取消，都以最新 AppState 保存完整 Pi entries 和叶子游标。
     try {
-      await persistPiSession(user.id, conversation, session);
+      const finalState = await readState(selectedModel, user.id);
+      const finalConversation = finalState.conversations.find(
+        (item) => item.id === conversation.id,
+      );
+      if (finalConversation) {
+        await persistPiSession(user.id, finalConversation, session);
+        await writeState(finalState, user.id);
+      }
     } catch (error) {
       console.error(
         "[pi-session:persist-error]",

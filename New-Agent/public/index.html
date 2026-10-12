@@ -430,6 +430,109 @@
       outline-offset: 2px;
     }
 
+    .tree-layer[hidden] { display: none; }
+    .tree-dialog {
+      width: min(820px, 100%);
+      max-height: min(760px, calc(100vh - 44px));
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--card);
+      color: var(--text);
+      box-shadow: var(--shadow), 0 28px 80px rgb(18 26 35 / 22%);
+      display: grid;
+      grid-template-rows: auto auto minmax(180px, 1fr) auto;
+      overflow: hidden;
+    }
+    .tree-dialog-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .tree-dialog-head h2 { margin: 0; font-size: 18px; }
+    .tree-dialog-head p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .tree-dialog-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+    .tree-options {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 10px 20px;
+      background: var(--soft-surface);
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .tree-filter-options { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .tree-options label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+    .tree-status { color: var(--soft); text-align: right; }
+    .session-tree {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px 16px 18px;
+    }
+    .tree-empty { padding: 42px 16px; color: var(--muted); text-align: center; }
+    .tree-branch { min-width: 0; }
+    .tree-children {
+      margin-left: 17px;
+      padding-left: 12px;
+      border-left: 1px solid var(--line-strong);
+    }
+    .tree-node {
+      width: 100%;
+      min-height: 46px;
+      margin: 3px 0;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--plain-control);
+      color: var(--text);
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      text-align: left;
+    }
+    .tree-node:hover:not(:disabled) { border-color: var(--accent); background: var(--nav-hover); }
+    .tree-node.active { border-color: var(--nav-active-border); background: var(--nav-active); }
+    .tree-node.leaf { box-shadow: inset 3px 0 0 var(--ok); }
+    .tree-node:disabled { opacity: 1; cursor: default; }
+    .tree-node-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: var(--chip-bg);
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+    }
+    .tree-node-copy { min-width: 0; }
+    .tree-node-copy b,
+    .tree-node-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tree-node-copy b { font-size: 12px; font-weight: 650; }
+    .tree-node-copy span { margin-top: 2px; color: var(--soft); font-size: 10px; }
+    .tree-node-badges { display: flex; gap: 5px; align-items: center; }
+    .tree-node-badges em {
+      border-radius: 999px;
+      padding: 2px 6px;
+      background: var(--chip-bg);
+      color: var(--muted);
+      font-size: 10px;
+      font-style: normal;
+      white-space: nowrap;
+    }
+    .tree-node-badges em.current { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+    .tree-dialog-foot {
+      padding: 10px 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
     .confirm-layer[hidden] { display: none; }
     .confirm-layer {
       position: fixed;
@@ -1963,6 +2066,7 @@
               <div class="composer-row">
                 <div class="composer-tools" id="composerTools"></div>
                 <div>
+                  <button class="mini-btn" id="sessionTreeBtn" type="button" disabled>会话树</button>
                   <button class="mini-btn" id="stopBtn" disabled>停止</button>
                   <button class="send-btn" id="sendBtn">↑</button>
                 </div>
@@ -2353,6 +2457,38 @@
     </section>
   </div>
 
+  <div class="confirm-layer tree-layer" id="sessionTreeModal" hidden>
+    <section class="tree-dialog" role="dialog" aria-modal="true" aria-labelledby="sessionTreeTitle">
+      <div class="tree-dialog-head">
+        <div>
+          <h2 id="sessionTreeTitle">Pi 会话树</h2>
+          <p>选择历史节点后，下一条消息会从该位置继续，原路径不会删除。</p>
+        </div>
+        <div class="tree-dialog-actions">
+          <button class="mini-btn" id="refreshSessionTreeBtn" type="button">刷新</button>
+          <button class="mini-btn" id="closeSessionTreeBtn" type="button">关闭</button>
+        </div>
+      </div>
+      <div class="tree-options">
+        <div class="tree-filter-options">
+          <label>
+            <input id="summarizeBranchInput" type="checkbox" />
+            切换时生成分支摘要
+          </label>
+          <label>
+            <input id="showTechnicalNodesInput" type="checkbox" />
+            显示 Tool 和系统节点
+          </label>
+        </div>
+        <span class="tree-status" id="sessionTreeStatus">尚未加载</span>
+      </div>
+      <div class="session-tree" id="sessionTreeList"></div>
+      <div class="tree-dialog-foot">
+        选择用户消息会回到发送该消息之前，并把原内容放回输入框；修改后发送即可形成新分支。选择其他节点则从该节点继续。
+      </div>
+    </section>
+  </div>
+
   <script>
     const $ = (selector) => document.querySelector(selector);
     const app = {
@@ -2361,6 +2497,7 @@
       evaluation: null,
       selected: { agent: null, skill: null, tool: null, knowledge: null, run: null, evalRun: null },
       currentConversationId: null,
+      currentTree: null,
       observeFilter: "all",
       evalCasePage: 1,
       moduleTabs: { observability: "overview", evaluation: "cases" },
@@ -2386,10 +2523,15 @@
     const deleteConversationModal = $("#deleteConversationModal");
     const deleteConversationName = $("#deleteConversationName");
     const deleteConversationMeta = $("#deleteConversationMeta");
+    const sessionTreeBtn = $("#sessionTreeBtn");
+    const sessionTreeModal = $("#sessionTreeModal");
+    const sessionTreeList = $("#sessionTreeList");
+    const sessionTreeStatus = $("#sessionTreeStatus");
     const loginForm = $("#loginForm");
     const registerForm = $("#registerForm");
     let aborter = null;
     let activeRunId = null;
+    let treeNavigationBusy = false;
     let assistantBubble = null;
     let pendingDeleteConversationId = null;
     const toolCards = new Map();
@@ -2758,6 +2900,7 @@
       $("#topAgentName").textContent = activeAgent?.name || "New-Agent";
       modelLine.textContent = formatModelName(runtime.model);
       statePill.textContent = runtime.busy ? "执行中" : "空闲";
+      sessionTreeBtn.disabled = !app.currentConversationId || Boolean(aborter) || treeNavigationBusy || runtime.busy;
       $("#composerTools").innerHTML = compactTags(tools.filter((tool) => tool.status === "ENABLED").map((tool) => tool.label), 4);
 
       if (app.currentConversationId && hiddenConversationIds.has(app.currentConversationId)) {
@@ -3728,6 +3871,193 @@
       assistantBubble = null;
     }
 
+    function sessionTreeTypeLabel(node) {
+      if (node.type === "message") {
+        return {
+          user: "用户消息",
+          assistant: "助手消息",
+          toolResult: "Tool 结果",
+          system: "系统消息",
+        }[node.role] || "消息";
+      }
+      return {
+        branch_summary: "分支摘要",
+        compaction: "上下文压缩",
+        model_change: "模型切换",
+        thinking_level_change: "思考级别",
+        usage: "用量记录",
+        context_edit: "上下文编辑",
+        label: "标签",
+        session_info: "会话信息",
+        custom_message: "扩展消息",
+        custom: "扩展状态",
+      }[node.type] || node.type;
+    }
+
+    function sessionTreeNodeIcon(node) {
+      if (node.branchPoint) return "⑂";
+      if (node.role === "user") return "U";
+      if (node.role === "assistant") return "A";
+      if (node.role === "toolResult") return "T";
+      if (node.type === "branch_summary") return "Σ";
+      return "·";
+    }
+
+    /**
+     * 默认隐藏 Pi 的底层运行节点，并把它们的可见后代提升到最近的对话节点下。
+     * 这样不会破坏分支关系，也不会让 Tool 循环产生大量“助手/Tool 结果”行。
+     */
+    function visibleSessionTreeNodes(nodes) {
+      if ($("#showTechnicalNodesInput").checked) return nodes || [];
+
+      let deepestActiveNode = null;
+      let deepestActiveDepth = -1;
+      function visit(node, depth = 0) {
+        const visibleChildren = (node.children || []).flatMap((child) =>
+          visit(child, depth + 1),
+        );
+
+        // 技术节点自身不渲染，但它下面的用户/最终助手消息仍需保留。
+        if (node.technical) return visibleChildren;
+
+        const visibleNode = {
+          ...node,
+          children: visibleChildren,
+          // 分叉点以精简后的可见分支数量为准。
+          branchPoint: visibleChildren.length > 1,
+          displayLeaf: false,
+        };
+        if (visibleNode.active && depth > deepestActiveDepth) {
+          deepestActiveNode = visibleNode;
+          deepestActiveDepth = depth;
+        }
+        return [visibleNode];
+      }
+
+      const visibleRoots = (nodes || []).flatMap(visit);
+
+      // 当前真实 leaf 可能是被隐藏的技术节点；此时把活动路径中最深的可见节点
+      // 标记为“当前分支”，让用户仍能看懂当前上下文停留在哪条路径上。
+      if (deepestActiveNode) deepestActiveNode.displayLeaf = true;
+      return visibleRoots;
+    }
+
+    function renderSessionTreeNodes(nodes) {
+      return (nodes || []).map((node) => {
+        const badges = [
+          node.branchPoint ? "<em>分叉点</em>" : "",
+          node.leaf
+            ? '<em class="current">当前位置</em>'
+            : node.displayLeaf
+              ? '<em class="current">当前分支</em>'
+              : "",
+        ].join("");
+        const label = node.label ? ` · ${escapeHtml(node.label)}` : "";
+        return `
+          <div class="tree-branch">
+            <button
+              class="tree-node ${node.active ? "active" : ""} ${node.leaf || node.displayLeaf ? "leaf" : ""}"
+              type="button"
+              data-tree-target="${escapeHtml(node.id)}"
+              ${node.leaf ? "disabled" : ""}
+            >
+              <span class="tree-node-icon">${sessionTreeNodeIcon(node)}</span>
+              <span class="tree-node-copy">
+                <b>${escapeHtml(node.title)}</b>
+                <span>${escapeHtml(sessionTreeTypeLabel(node))}${label} · ${formatTime(node.timestamp)}</span>
+              </span>
+              <span class="tree-node-badges">${badges}</span>
+            </button>
+            ${node.children?.length ? `<div class="tree-children">${renderSessionTreeNodes(node.children)}</div>` : ""}
+          </div>`;
+      }).join("");
+    }
+
+    function renderSessionTree() {
+      const tree = app.currentTree;
+      const visibleNodes = visibleSessionTreeNodes(tree?.nodes || []);
+      if (!visibleNodes.length) {
+        sessionTreeList.innerHTML = '<div class="tree-empty">暂无可展示的对话节点。发送消息后会显示用户问题和最终回复；也可以勾选“显示 Tool 和系统节点”查看完整 entries。</div>';
+      } else {
+        sessionTreeList.innerHTML = renderSessionTreeNodes(visibleNodes);
+      }
+      sessionTreeStatus.textContent = tree
+        ? `Session ${tree.sessionId.slice(0, 8)} · ${$("#showTechnicalNodesInput").checked ? "完整视图" : "精简视图"}`
+        : "尚未加载";
+    }
+
+    function setTreeNavigationBusy(busy) {
+      treeNavigationBusy = busy;
+      sendBtn.disabled = busy || Boolean(aborter);
+      sessionTreeBtn.disabled = busy || Boolean(aborter) || !app.currentConversationId;
+    }
+
+    async function loadSessionTree() {
+      if (!app.currentConversationId || treeNavigationBusy) return;
+      setTreeNavigationBusy(true);
+      sessionTreeStatus.textContent = "正在读取会话树...";
+      sessionTreeList.innerHTML = '<div class="tree-empty">加载中...</div>';
+      try {
+        app.currentTree = await api(`/api/conversations/${app.currentConversationId}/tree`);
+        renderSessionTree();
+      } catch (error) {
+        sessionTreeStatus.textContent = "读取失败";
+        sessionTreeList.innerHTML = `<div class="tree-empty">${escapeHtml(error.message)}</div>`;
+      } finally {
+        setTreeNavigationBusy(false);
+      }
+    }
+
+    async function openSessionTree() {
+      if (!app.currentConversationId || aborter || treeNavigationBusy) return;
+      sessionTreeModal.hidden = false;
+      await loadSessionTree();
+    }
+
+    function closeSessionTree() {
+      sessionTreeModal.hidden = true;
+    }
+
+    async function navigateSessionTree(targetId) {
+      if (!targetId || !app.currentConversationId || aborter || treeNavigationBusy) return;
+      setTreeNavigationBusy(true);
+      sessionTreeStatus.textContent = $("#summarizeBranchInput").checked
+        ? "正在生成摘要并切换..."
+        : "正在切换分支...";
+      sessionTreeList.querySelectorAll("button").forEach((button) => {
+        button.disabled = true;
+      });
+
+      try {
+        const data = await api(`/api/conversations/${app.currentConversationId}/tree/navigate`, {
+          method: "POST",
+          body: JSON.stringify({
+            targetId,
+            summarize: $("#summarizeBranchInput").checked,
+          }),
+        });
+
+        const index = app.state.conversations.findIndex(
+          (item) => item.id === data.conversation.id,
+        );
+        if (index >= 0) app.state.conversations[index] = data.conversation;
+        app.currentTree = data.tree;
+        renderConversation(data.conversation);
+
+        // Pi 选中用户消息时会返回原文，让用户修改后重新发送形成新分支。
+        if (typeof data.editorText === "string") {
+          input.value = data.editorText;
+        }
+        closeSessionTree();
+        input.focus();
+      } catch (error) {
+        renderSessionTree();
+        sessionTreeStatus.textContent = `切换失败：${error.message}`;
+      } finally {
+        setTreeNavigationBusy(false);
+      }
+    }
+
     function renderConversation(conversation) {
       app.currentConversationId = conversation.id;
       resetChatSurface();
@@ -3745,6 +4075,7 @@
     }
 
     async function openConversation(id) {
+      closeSessionTree();
       const conversation = await api(`/api/conversations/${id}`);
       renderConversation(conversation);
     }
@@ -3789,6 +4120,7 @@
     }
 
     async function createConversation() {
+      closeSessionTree();
       // api 封装负责发送 JSON 请求，并在非 2xx 响应时抛出异常。
       const conversation = await api("/api/conversations", {
         method: "POST",
@@ -3972,10 +4304,11 @@
     async function sendTask() {
       // 去掉首尾空格；空消息或已有请求运行时不重复发送。
       const message = input.value.trim();
-      if (!message || aborter) return;
+      if (!message || aborter || treeNavigationBusy) return;
 
       // 第一次发送前创建应用会话；后续追问复用同一个 conversationId。
       if (!app.currentConversationId) await createConversation();
+      closeSessionTree();
 
       // 先做乐观 UI 更新，让用户立即看到自己刚发送的消息。
       addMessage("user", message);
@@ -3985,6 +4318,7 @@
       // 运行期间禁用发送、启用停止，并为 fetch 创建取消控制器。
       sendBtn.disabled = true;
       stopBtn.disabled = false;
+      sessionTreeBtn.disabled = true;
       aborter = new AbortController();
 
       try {
@@ -4031,6 +4365,7 @@
         // 无论成功、失败还是取消，都恢复页面输入状态。
         sendBtn.disabled = false;
         stopBtn.disabled = true;
+        sessionTreeBtn.disabled = !app.currentConversationId;
         aborter = null;
       }
     }
@@ -4131,6 +4466,10 @@
     });
 
     document.addEventListener("keydown", async (event) => {
+      if (!sessionTreeModal.hidden && event.key === "Escape") {
+        closeSessionTree();
+        return;
+      }
       if (!deleteConversationModal.hidden && event.key === "Escape") {
         closeDeleteConversationModal();
         return;
@@ -4156,6 +4495,19 @@
     $("#themeBtn").addEventListener("click", () => {
       applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
     });
+    sessionTreeBtn.addEventListener("click", openSessionTree);
+    $("#closeSessionTreeBtn").addEventListener("click", closeSessionTree);
+    $("#refreshSessionTreeBtn").addEventListener("click", loadSessionTree);
+    $("#showTechnicalNodesInput").addEventListener("change", renderSessionTree);
+    sessionTreeList.addEventListener("click", async (event) => {
+      const target = event.target.closest("[data-tree-target]");
+      if (target && !target.disabled) {
+        await navigateSessionTree(target.dataset.treeTarget);
+      }
+    });
+    sessionTreeModal.addEventListener("click", (event) => {
+      if (event.target === sessionTreeModal) closeSessionTree();
+    });
     $("#sendBtn").addEventListener("click", () => sendTask());
     $("#stopBtn").addEventListener("click", async () => {
       if (activeRunId) {
@@ -4169,8 +4521,10 @@
       app.state = null;
       app.observability = null;
       app.evaluation = null;
+      app.currentTree = null;
       evalSelectedCases.clear();
       app.currentConversationId = null;
+      closeSessionTree();
       resetChatSurface();
       showLogin("已退出登录");
     });
