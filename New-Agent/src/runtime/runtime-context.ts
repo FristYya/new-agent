@@ -131,7 +131,12 @@ export function createRuntimeRegistry(options: RuntimeRegistryOptions) {
     runtimes.clear();
   }
 
-  return { getRuntime, disposeAll };
+  /** 评测等隔离任务使用的新上下文，不加入用户聊天缓存。 */
+  function createDetachedRuntime(user: AuthUser): RuntimeContext {
+    return createRuntimeContext(user);
+  }
+
+  return { getRuntime, createDetachedRuntime, disposeAll };
 }
 
 /**

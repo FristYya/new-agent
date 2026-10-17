@@ -353,6 +353,15 @@ export class UserRegistry {
     );
   }
 
+  /** 返回不含凭据的用户列表，供后台任务恢复等服务端流程使用。 */
+  list(): AuthUser[] {
+    return [...this.users.values()].map(({ id, username, displayName }) => ({
+      id,
+      username,
+      displayName,
+    }));
+  }
+
   /**
    * 统一验证密码。
    * 注册用户优先走安全的 scrypt 哈希校验；只有内置演示账号才回退到明文兼容逻辑。

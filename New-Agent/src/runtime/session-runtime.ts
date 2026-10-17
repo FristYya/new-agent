@@ -1,6 +1,7 @@
 import {
   // 根据模型、资源加载器、Tool 和 SessionManager 创建真正的 Pi AgentSession。
   createAgentSession,
+  SessionManager,
   // ModelRuntime 负责发现模型，并提供模型运行时能力。
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
@@ -59,6 +60,29 @@ type SessionRuntimeOptions = {
  * 不再关心 Pi Session 的创建、切换和存储细节。
  */
 export function createSessionRuntime(options: SessionRuntimeOptions) {
+  async function buildAgentSession(
+    context: RuntimeContext,
+    state: AppState,
+    agentId: string | undefined,
+    sessionManager: SessionManager,
+    safeEvaluation = false,
+  ) {
+    const executableTools = await options.applyRuntimePolicy(context, state, agentId);
+    const allSkillTools = await discoverSkillPackageTools(state.skills);
+    const customTools = createSkillToolDefinitions(allSkillTools);
+    const allToolNames = [...new Set([...options.coreTools, ...allSkillTools.map((item) => item.manifest.name)])];
+    const { session } = await createAgentSession({
+      cwd: process.cwd(), model: options.model, modelRuntime: options.modelRuntime,
+      resourceLoader: context.loader, sessionManager, customTools, tools: allToolNames,
+    });
+    await session.bindExtensions({ mode: "print" });
+    const activeTools = safeEvaluation
+      ? executableTools.filter((name) => ["read", "grep", "find", "ls"].includes(name))
+      : executableTools;
+    session.setActiveToolsByName(activeTools);
+    return session;
+  }
+
   /** 为指定业务会话创建一个新的 AgentSession。 */
   async function createNewAgentSession(
     context: RuntimeContext,
@@ -66,29 +90,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions) {
     conversation: ConversationRecord,
     ownerId: string,
   ) {
-    // 第一步：根据最新 Agent、Skill、Tool 配置计算白名单。
-    // 不能沿用上一次结果，因为用户可能刚刚启用或禁用了某项能力。
-    const executableTools = await options.applyRuntimePolicy(
-      context,
-      state,
-      conversation.agentId,
-    );
-
-    // 第二步：发现 AppState 中所有可信 Skill 包声明的 Tool。
-    // 这里负责“注册”，真正能否调用仍由 executableTools 和 guard 控制。
-    const allSkillTools = await discoverSkillPackageTools(state.skills);
-    const customTools = createSkillToolDefinitions(allSkillTools);
-
-    // Pi SDK 创建 Session 时需要知道全部可注册 Tool 的名称。
-    // Set 用于去重，避免 Skill Tool 与基础 Tool 重名时重复注册。
-    const allToolNames = [
-      ...new Set([
-        ...options.coreTools,
-        ...allSkillTools.map((item) => item.manifest.name),
-      ]),
-    ];
-
-    // 第三步：由存储模块返回统一的 SessionManager。
+    // 由存储模块返回统一的 SessionManager。
     // MySQL 模式会从 pi_sessions 恢复 entries；file 模式会创建或打开 JSONL。
     const sessionManager = await conversationSessionManager(
       ownerId,
@@ -97,24 +99,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions) {
 
     // 第四步：把模型、Loader、SessionManager 和 Tool 交给 Pi SDK，
     // 创建本次业务会话真正使用的 AgentSession。
-    const { session } = await createAgentSession({
-      // Tool 执行和相对路径解析都以项目根目录为工作目录。
-      cwd: process.cwd(),
-      model: options.model,
-      modelRuntime: options.modelRuntime,
-      // loader 已经绑定当前用户最新的系统提示词、Skill 和扩展。
-      resourceLoader: context.loader,
-      sessionManager,
-      // customTools 是 Skill 包提供的自定义 Tool 实现。
-      customTools,
-      // tools 是基础 Tool 与 Skill Tool 的完整名称集合。
-      tools: allToolNames,
-    });
-
-    // 第五步：先绑定 guard、audit 等扩展，再设置本轮白名单。
-    // 这样模型最终只能看到并调用策略允许的 Tool。
-    await session.bindExtensions({ mode: "print" });
-    session.setActiveToolsByName(executableTools);
+    const session = await buildAgentSession(
+      context, state, conversation.agentId, sessionManager,
+    );
 
     // 第六步：业务会话只保存当前存储模式需要的定位信息，
     // 避免同时保留 file 和 MySQL 两种来源而产生歧义。
@@ -258,5 +245,17 @@ export function createSessionRuntime(options: SessionRuntimeOptions) {
     getConversationTree,
     navigateConversationTree,
     persistPiSession,
+    /** 为评测创建不写入业务会话的独立 Session；只开放只读内置 Tool。 */
+    createEvaluationSession: (
+      context: RuntimeContext,
+      state: AppState,
+      agentId?: string,
+    ) => buildAgentSession(
+      context,
+      state,
+      agentId,
+      SessionManager.inMemory(process.cwd()),
+      true,
+    ),
   };
 }

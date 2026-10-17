@@ -2276,6 +2276,7 @@
                   </div>
                 </form>
                 <div class="run-list" id="observeRunList"></div>
+                <div class="eval-pagination" id="observeRunPagination"></div>
               </div>
               <div class="table-card observe-trace observe-fixed">
                 <h2>Trace 时间线</h2>
@@ -2297,13 +2298,17 @@
             <div><h1>评测中心</h1><p>管理确定性评测用例、运行回归评测，并用基线识别能力退化。</p></div>
             <div class="form-actions">
               <button class="mini-btn" id="newEvalCaseBtn" type="button">新建用例</button>
+              <button class="mini-btn" id="runAgentEvalBtn" type="button">执行 Agent Runner</button>
               <button class="primary-btn" id="runEvalBtn" type="button">运行评测</button>
             </div>
           </div>
           <div class="module-tabs" data-module-tabs="evaluation" role="tablist" aria-label="评测中心视图">
             <button class="module-tab active" type="button" role="tab" aria-selected="true" data-module-tab="evaluation:cases">用例管理</button>
+            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:datasets">数据集治理</button>
             <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:trends">质量趋势</button>
+            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:reports">报告中心</button>
             <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:history">运行历史</button>
+            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:audit">审计日志</button>
           </div>
           <section class="module-panel eval-case-workspace" data-module-panel="evaluation:cases">
             <div class="stats" id="evalStats"></div>
@@ -2314,6 +2319,8 @@
                 <div class="compact-form">
                   <label>当前数据集<select id="evalDatasetFilter"></select></label>
                   <label>新数据集<input id="newEvalDatasetName" placeholder="核心业务回归集" /></label>
+                  <label>Suite<select id="newEvalDatasetSuite"><option value="regression">Regression</option><option value="capability">Capability</option><option value="canary">Canary</option><option value="shadow">Shadow</option><option value="adversarial">Adversarial</option></select></label>
+                  <label>每条 Trial 数<input id="evalTrialCount" type="number" min="1" max="20" value="3" /></label>
                   <button class="mini-btn" id="createEvalDatasetBtn" type="button">创建</button>
                 </div>
               </div>
@@ -2321,7 +2328,12 @@
                 <h2>发布门禁</h2>
                 <form class="compact-form" id="evalGateForm">
                   <label>最低通过率<input name="minPassRate" type="number" min="0" max="100" step="1" /></label>
+                  <label>最低加权通过率<input name="minWeightedPassRate" type="number" min="0" max="100" step="1" /></label>
                   <label>最大回归数<input name="maxRegressions" type="number" min="0" step="1" /></label>
+                  <label>最少 Trial/用例<input name="minTrialsPerCase" type="number" min="1" max="20" step="1" /></label>
+                  <label>95% CI 下界<input name="minConfidenceLowerBound" type="number" min="0" max="100" step="1" /></label>
+                  <label><input name="blockCritical" type="checkbox" checked /> Critical 失败阻断</label>
+                  <label><input name="requirePublishedDataset" type="checkbox" checked /> 仅已发布数据集可放行</label>
                   <button class="mini-btn" type="submit">保存</button>
                 </form>
               </div>
@@ -2341,7 +2353,7 @@
                 </label>
                 <label class="filter-control filter-select" aria-label="筛选评测类型">
                   <span class="filter-label">类型</span>
-                  <select id="evalCaseFilter"><option value="all">全部</option><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option></select>
+                  <select id="evalCaseFilter"><option value="all">全部</option><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option><option value="agent_task">Agent 任务</option><option value="semantic_judge">语义裁判</option></select>
                 </label>
               </div>
               <div class="table-scroll">
@@ -2355,7 +2367,7 @@
                 <input type="hidden" name="id" />
                 <label>名称<input name="name" required /></label>
                 <label>说明<textarea name="description"></textarea></label>
-                <label>类型<select name="category" id="evalCategory"><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option></select></label>
+                <label>类型<select name="category" id="evalCategory"><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option><option value="agent_task">Agent 任务</option><option value="semantic_judge">语义裁判</option></select></label>
                 <label>标签<input name="tags" placeholder="安全,回归" /></label>
                 <label>所属数据集<select name="datasetId" id="evalDatasetId"></select></label>
                 <label>严重级别<select name="severity"><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select></label>
@@ -2393,14 +2405,58 @@
                     <label>期望轨迹 JSON<textarea name="trajectoryExpected" placeholder='{"sequence":["read","write"],"maxCalls":2}'></textarea></label>
                   </div>
                 </div>
+                <div class="eval-case-panel" data-eval-panel="agent_task" hidden>
+                  <div class="form-grid">
+                    <label>测试任务<textarea name="agentPrompt" placeholder="让 Agent 完成的真实任务"></textarea></label>
+                    <label>输出必须包含<input name="agentContains" placeholder="关键词1,关键词2" /></label>
+                    <label>输出禁止包含<input name="agentNotContains" placeholder="错误信息,敏感内容" /></label>
+                    <label>必须调用 Tools<input name="agentRequiredTools" placeholder="read,grep" /></label>
+                    <label>禁止调用 Tools<input name="agentForbiddenTools" placeholder="write,bash" /></label>
+                    <label>最大延迟 ms<input name="agentMaxLatency" type="number" min="1" /></label>
+                  </div>
+                </div>
+                <div class="eval-case-panel" data-eval-panel="semantic_judge" hidden>
+                  <div class="form-grid">
+                    <label>评分 Rubric<textarea name="judgeRubric" placeholder="明确列出正确性、完整性、安全性的评分锚点"></textarea></label>
+                    <label>Rubric 版本<input name="judgeRubricVersion" placeholder="support-answer-v1" /></label>
+                    <label>最低得分（0-1）<input name="judgeMinScore" type="number" min="0" max="1" step="0.01" value="0.8" /></label>
+                    <label>最低置信度（0-1）<input name="judgeMinConfidence" type="number" min="0" max="1" step="0.01" value="0.7" /></label>
+                    <label>Judge 证据 JSON<textarea name="judgeEvidence" placeholder='{"verdict":"pass","score":0.9,"confidence":0.85,"rubricVersion":"support-answer-v1","judgeSnapshot":{"provider":"openai","model":"model-id","promptHash":"sha256..."}}'></textarea></label>
+                  </div>
+                </div>
                 <div class="form-actions"><button class="primary-btn" type="submit">保存用例</button><button class="mini-btn" id="resetEvalCaseBtn" type="button">清空</button></div>
               </form>
             </div>
           </div>
           </section>
+          <section class="module-panel" data-module-panel="evaluation:datasets" hidden>
+            <div class="table-card">
+              <div class="history-head"><h2>数据集版本</h2><span class="muted">用例变化自动生成不可变快照</span></div>
+              <div id="evalDatasetGovernance"></div>
+              <div id="evalDatasetDiff" class="muted">选择“比较最近版本”查看新增、删除和修改。</div>
+            </div>
+            <div class="table-card" style="margin-top:12px">
+              <h2>Evaluation Profile</h2>
+              <form class="compact-form" id="evalProfileForm">
+                <label>名称<input name="name" required placeholder="核心 Agent Profile" /></label>
+                <label>Agent<select name="agentId" id="evalProfileAgent"></select></label>
+                <label>目标<input name="objectives" placeholder="准确,安全,低延迟" /></label>
+                <label>红线标签<input name="redLines" placeholder="security,critical" /></label>
+                <label>必过标签<input name="requiredTags" placeholder="core,safety" /></label>
+                <button class="mini-btn" type="submit">创建 Profile</button>
+              </form>
+              <div id="evalProfileList"></div>
+            </div>
+          </section>
           <section class="module-panel trend-section eval-trends" data-module-panel="evaluation:trends" hidden>
             <div class="trend-section-head"><h2>质量趋势</h2><span>最近 10 次评测运行</span></div>
             <div class="trend-grid" id="evalTrends"></div>
+          </section>
+          <section class="module-panel" data-module-panel="evaluation:reports" hidden>
+            <div class="table-card">
+              <h2>报告与人工复核</h2>
+              <div id="evalReportCenter"></div>
+            </div>
           </section>
           <section class="module-panel eval-history" data-module-panel="evaluation:history" hidden>
             <div class="table-card">
@@ -2408,8 +2464,14 @@
               <div class="eval-run-list" id="evalRunList"></div>
             </div>
             <div class="table-card">
-              <div class="history-head"><h2>运行详情</h2><button class="mini-btn" id="setEvalBaselineBtn" type="button" disabled>设为基线</button></div>
+              <div class="history-head"><h2>运行详情</h2><div class="form-actions"><a class="mini-btn" id="downloadEvalReportBtn" href="#" target="_blank" hidden>导出 Markdown</a><button class="mini-btn" id="setEvalBaselineBtn" type="button" disabled>设为基线</button></div></div>
               <div id="evalRunDetail" class="muted">运行一次评测后查看断言与回归对比。</div>
+            </div>
+          </section>
+          <section class="module-panel" data-module-panel="evaluation:audit" hidden>
+            <div class="table-card">
+              <div class="history-head"><h2>评测治理审计</h2><span class="muted" id="evalAuditIntegrity">记录用例、数据集、Profile、门禁、基线与复核变更</span></div>
+              <div class="eval-result-list" id="evalAuditLog"></div>
             </div>
           </section>
         </div>
@@ -2500,6 +2562,7 @@
       currentTree: null,
       observeFilter: "all",
       evalCasePage: 1,
+      observeRunOffset: 0,
       moduleTabs: { observability: "overview", evaluation: "cases" },
       user: null,
     };
@@ -2620,14 +2683,19 @@
       renderObservability();
     }
 
-    async function searchObservabilityRuns() {
+    async function searchObservabilityRuns(offset = 0) {
       const params = new URLSearchParams();
       const query = $("#observeRunSearch").value.trim();
       const status = $("#observeRunStatus").value;
       if (query) params.set("q", query);
       if (status) params.set("status", status);
+      params.set("limit", "50");
+      params.set("offset", String(Math.max(0, offset)));
       const result = await api(`/api/observability/runs?${params}`);
       app.observability.runs = result.runs || [];
+      app.observability.events = result.events || [];
+      app.observability.pagination = result.pagination;
+      app.observeRunOffset = result.pagination?.offset || 0;
       app.selected.run = app.observability.runs[0]?.id || null;
       renderObservability();
     }
@@ -2935,7 +3003,7 @@
     }
 
     function evalCategoryLabel(category) {
-      return { policy: "Tool 策略", structured_output: "结构化输出", assertion: "通用断言", trajectory: "调用轨迹" }[category] || category;
+      return { policy: "Tool 策略", structured_output: "结构化输出", assertion: "通用断言", trajectory: "调用轨迹", agent_task: "Agent 任务", semantic_judge: "语义裁判" }[category] || category;
     }
 
     function syncEvalCasePanels() {
@@ -2955,6 +3023,17 @@
       form.elements.assertions.value = "[]";
       form.elements.actualTools.value = "[]";
       form.elements.trajectoryExpected.value = "{}";
+      form.elements.agentPrompt.value = "";
+      form.elements.agentContains.value = "";
+      form.elements.agentNotContains.value = "";
+      form.elements.agentRequiredTools.value = "";
+      form.elements.agentForbiddenTools.value = "";
+      form.elements.agentMaxLatency.value = "";
+      form.elements.judgeRubric.value = "";
+      form.elements.judgeRubricVersion.value = "";
+      form.elements.judgeMinScore.value = "0.8";
+      form.elements.judgeMinConfidence.value = "0.7";
+      form.elements.judgeEvidence.value = "{}";
       form.elements.weight.value = "1";
       form.elements.severity.value = "medium";
       if (app.evaluation?.datasets?.length) form.elements.datasetId.value = $("#evalDatasetFilter").value || app.evaluation.datasets[0].id;
@@ -2994,6 +3073,19 @@
       } else if (item.category === "trajectory") {
         form.elements.actualTools.value = JSON.stringify(item.actualTools ?? [], null, 2);
         form.elements.trajectoryExpected.value = JSON.stringify(item.expected ?? {}, null, 2);
+      } else if (item.category === "agent_task") {
+        form.elements.agentPrompt.value = item.prompt || "";
+        form.elements.agentContains.value = (item.expected?.contains || []).join(",");
+        form.elements.agentNotContains.value = (item.expected?.notContains || []).join(",");
+        form.elements.agentRequiredTools.value = (item.expected?.requiredTools || []).join(",");
+        form.elements.agentForbiddenTools.value = (item.expected?.forbiddenTools || []).join(",");
+        form.elements.agentMaxLatency.value = item.expected?.maxLatencyMs || "";
+      } else if (item.category === "semantic_judge") {
+        form.elements.judgeRubric.value = item.rubric || "";
+        form.elements.judgeRubricVersion.value = item.rubricVersion || "";
+        form.elements.judgeMinScore.value = item.expected?.minScore ?? 0.8;
+        form.elements.judgeMinConfidence.value = item.expected?.minConfidence ?? 0.7;
+        form.elements.judgeEvidence.value = JSON.stringify(item.evidence ?? {}, null, 2);
       }
       $("#evalCaseEditorTitle").textContent = "编辑评测用例";
       syncEvalCasePanels();
@@ -3055,6 +3147,40 @@
           throw new Error("实际 Tool 轨迹和期望轨迹必须是合法 JSON");
         }
       }
+      if (values.category === "agent_task") {
+        return {
+          ...common,
+          prompt: String(values.agentPrompt || "").trim(),
+          evidence: { output: "", status: "pending", tools: [], latencyMs: 0 },
+          expected: {
+            status: "succeeded",
+            contains: normalizeTags(values.agentContains),
+            notContains: normalizeTags(values.agentNotContains),
+            requiredTools: normalizeTags(values.agentRequiredTools),
+            forbiddenTools: normalizeTags(values.agentForbiddenTools),
+            ...(Number(values.agentMaxLatency) > 0 ? { maxLatencyMs: Number(values.agentMaxLatency) } : {}),
+          },
+        };
+      }
+      if (values.category === "semantic_judge") {
+        let evidence;
+        try {
+          evidence = JSON.parse(String(values.judgeEvidence || "{}"));
+        } catch {
+          throw new Error("Judge 证据必须是合法 JSON");
+        }
+        return {
+          ...common,
+          rubric: String(values.judgeRubric || "").trim(),
+          rubricVersion: String(values.judgeRubricVersion || "").trim(),
+          evidence,
+          expected: {
+            minScore: Number(values.judgeMinScore ?? 0.8),
+            minConfidence: Number(values.judgeMinConfidence ?? 0.7),
+            allowedVerdicts: ["pass"],
+          },
+        };
+      }
       return {
         ...common,
         output: String(values.structuredOutput || ""),
@@ -3068,12 +3194,16 @@
       const baselineButton = $("#setEvalBaselineBtn");
       if (!run) {
         baselineButton.disabled = true;
+        $("#downloadEvalReportBtn").hidden = true;
         detail.innerHTML = `<span class="muted">运行一次评测后查看断言与回归对比。</span>`;
         return;
       }
       const isBaseline = run.id === app.evaluation.baselineRunId;
-      baselineButton.disabled = isBaseline;
-      baselineButton.textContent = isBaseline ? "当前基线" : "设为基线";
+      const releaseDecision = (run.releaseDecision || run.gate)?.decision;
+      baselineButton.disabled = isBaseline || releaseDecision !== "approved";
+      $("#downloadEvalReportBtn").hidden = false;
+      $("#downloadEvalReportBtn").href = `/api/evals/runs/${encodeURIComponent(run.id)}/report.md`;
+      baselineButton.textContent = isBaseline ? "当前基线" : releaseDecision === "approved" ? "设为基线" : "仅 approved 可设基线";
       const names = new Map((run.caseSnapshot || []).map((item) => [item.id, item.name]));
       const comparison = run.comparison;
       detail.innerHTML = `
@@ -3084,7 +3214,8 @@
           ${stat("耗时", formatMs(run.durationMs))}
         </div>
         ${comparison ? `<p class="muted">对比基线：通过率 ${comparison.passRateDelta >= 0 ? "+" : ""}${Math.round(comparison.passRateDelta * 100)} 个百分点 · 回归 ${comparison.regressions.length} · 改善 ${comparison.improvements.length}</p>` : `<p class="muted">当前运行尚无基线对比。</p>`}
-        <p class="muted">发布门禁：${run.gate?.passed !== false ? "通过" : `未通过 · ${(run.gate?.reasons || []).map(escapeHtml).join("；")}`}</p>
+        ${run.statistics ? `<p class="muted">Trial ${run.statistics.passedTrials}/${run.statistics.totalTrials} · 通过率 ${Math.round(run.statistics.trialPassRate * 100)}%${run.statistics.confidenceInterval ? ` · 95% Wilson CI ${Math.round(run.statistics.confidenceInterval.lower * 100)}%–${Math.round(run.statistics.confidenceInterval.upper * 100)}%` : ""}</p>` : ""}
+        <p class="muted">发布门禁：${escapeHtml((run.releaseDecision || run.gate)?.decision || "unknown")}${((run.releaseDecision || run.gate)?.reasons || []).length ? ` · ${((run.releaseDecision || run.gate)?.reasons || []).map(escapeHtml).join("；")}` : ""}</p>
         <div class="eval-result-list">
           ${(run.results || []).map((result) => `
             <div class="eval-result ${result.passed ? "" : "failed"}">
@@ -3106,11 +3237,49 @@
       if (datasets.some((item) => item.id === selectedDataset)) $("#evalDatasetFilter").value = selectedDataset;
       const gate = data.gate || { minPassRate: 1, maxRegressions: 0 };
       $("#evalGateForm").elements.minPassRate.value = Math.round(gate.minPassRate * 100);
+      $("#evalGateForm").elements.minWeightedPassRate.value = Math.round((gate.minWeightedPassRate ?? gate.minPassRate) * 100);
       $("#evalGateForm").elements.maxRegressions.value = gate.maxRegressions;
+      $("#evalGateForm").elements.minTrialsPerCase.value = gate.minTrialsPerCase ?? 1;
+      $("#evalGateForm").elements.minConfidenceLowerBound.value = Math.round((gate.minConfidenceLowerBound ?? 0) * 100);
+      $("#evalGateForm").elements.blockCritical.checked = gate.blockCritical !== false;
+      $("#evalGateForm").elements.requirePublishedDataset.checked = gate.requirePublishedDataset !== false;
+      $("#evalProfileAgent").innerHTML = (app.state?.agents || []).map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join("");
+      $("#evalDatasetGovernance").innerHTML = datasets.map((dataset) => `
+        <div class="eval-result">
+          <b>${escapeHtml(dataset.name)} · v${dataset.version}</b>
+          <p>${escapeHtml(dataset.suite || "regression")} · ${escapeHtml(dataset.status || "draft")} · Owner ${escapeHtml(dataset.owner || "未设置")} · 已发布 v${dataset.publishedVersion ?? "-"}</p>
+          <p>${dataset.versions?.length || 0} 个版本 · 最新更新 ${formatTime(dataset.updatedAt)}</p>
+          <button class="mini-btn" type="button" data-diff-eval-dataset="${dataset.id}">比较最近版本</button>
+          ${dataset.status !== "published" ? `<button class="mini-btn" type="button" data-eval-dataset-status="published" data-eval-dataset-id="${dataset.id}">发布</button>` : ""}
+          ${dataset.status !== "retired" ? `<button class="mini-btn" type="button" data-eval-dataset-status="retired" data-eval-dataset-id="${dataset.id}">退役</button>` : ""}
+        </div>`).join("") || `<p class="muted">暂无数据集。</p>`;
+      $("#evalProfileList").innerHTML = (data.profiles || []).map((profile) => `
+        <div class="eval-result"><b>${escapeHtml(profile.name)} · v${profile.version}</b><p>Agent ${escapeHtml(profile.agentId)} · 必过标签 ${(profile.requiredTags || []).map(escapeHtml).join("、") || "无"}</p></div>
+      `).join("") || `<p class="muted">暂无 Evaluation Profile。</p>`;
+      const runNames = new Map((data.runs || []).map((run) => [run.id, run.name]));
+      $("#evalReportCenter").innerHTML = `
+        ${(data.runs || []).slice(0, 10).map((run) => `<div class="eval-result ${(run.releaseDecision || run.gate)?.decision === "blocked" ? "failed" : ""}"><b>${escapeHtml(run.name)} · ${escapeHtml((run.releaseDecision || run.gate)?.decision || "unknown")}</b><p>通过率 ${Math.round(run.summary.passRate * 100)}% · 加权 ${Math.round((run.summary.weightedPassRate || 0) * 100)}% · <a href="/api/evals/runs/${encodeURIComponent(run.id)}/report.md" target="_blank">Markdown 报告</a></p></div>`).join("") || `<p class="muted">暂无报告。</p>`}
+        <h3>待人工复核</h3>
+        ${(data.reviews || []).filter((review) => review.status === "pending").map((review) => `<div class="eval-result failed"><b>${escapeHtml(runNames.get(review.runId) || review.runId)} · ${escapeHtml(review.caseId)}</b><p><button class="mini-btn" type="button" data-review-id="${review.id}" data-review-status="approved">批准</button> <button class="mini-btn" type="button" data-review-id="${review.id}" data-review-status="false_positive">误报</button> <button class="danger-btn" type="button" data-review-id="${review.id}" data-review-status="rejected">拒绝</button></p></div>`).join("") || `<p class="muted">暂无待复核项。</p>`}
+      `;
       const latestJob = (data.jobs || [])[0];
       $("#evalJobStatus").innerHTML = latestJob
-        ? `${escapeHtml(latestJob.name)} · ${escapeHtml(latestJob.status)}${latestJob.error ? ` · ${escapeHtml(latestJob.error)}` : ""}${["queued", "running"].includes(latestJob.status) ? ` <button class="mini-btn" type="button" data-cancel-eval-job="${latestJob.id}">取消</button>` : ""}`
+        ? `${escapeHtml(latestJob.name)} · ${escapeHtml(latestJob.status)} · ${Number(latestJob.progress?.percent || 0)}% · ${escapeHtml(latestJob.progress?.phase || "")}${latestJob.error ? ` · ${escapeHtml(latestJob.error)}` : ""}${["queued", "running"].includes(latestJob.status) ? ` <button class="mini-btn" type="button" data-cancel-eval-job="${latestJob.id}">取消</button>` : ""}`
         : "暂无运行中的评测任务。";
+      const auditLabels = {
+        "case.created": "创建用例", "case.updated": "更新用例", "case.deleted": "删除用例",
+        "dataset.created": "创建数据集", "dataset.lifecycle_updated": "更新数据集生命周期", "profile.created": "创建 Profile", "profile.updated": "更新 Profile",
+        "gate.updated": "更新发布门禁", "baseline.selected": "设置评测基线", "review.decided": "完成人工复核",
+      };
+      const auditIntegrity = data.auditIntegrity || { valid: true, checked: 0, legacy: 0, errors: [] };
+      $("#evalAuditIntegrity").textContent = auditIntegrity.valid
+        ? `完整性校验通过 · ${auditIntegrity.checked} 条受保护${auditIntegrity.legacy ? ` · ${auditIntegrity.legacy} 条历史记录` : ""}`
+        : `完整性校验失败 · ${auditIntegrity.errors?.length || 0} 个异常`;
+      $("#evalAuditLog").innerHTML = (data.auditLog || []).slice(0, 200).map((item) => `
+        <div class="eval-result">
+          <b>${escapeHtml(auditLabels[item.action] || item.action)} · ${escapeHtml(item.entityType)} / ${escapeHtml(item.entityId)}</b>
+          <p>操作者 ${escapeHtml(item.actorId)} · ${formatTime(item.createdAt)}${item.afterHash ? ` · 版本 ${escapeHtml(item.afterHash.slice(0, 12))}` : ""}</p>
+        </div>`).join("") || `<p class="muted">暂无治理变更记录。</p>`;
       $("#evalCount").textContent = summary.totalCases || 0;
       $("#evalStats").innerHTML = [
         stat("全部用例", summary.totalCases || 0),
@@ -3156,7 +3325,7 @@
       $("#evalRunList").innerHTML = runs.map((run) => `
         <button class="eval-run-item ${run.id === app.selected.evalRun ? "active" : ""}" data-select-eval-run="${run.id}" type="button">
           <b>${escapeHtml(run.name)}${run.id === data.baselineRunId ? " · 基线" : ""}</b>
-          <span>${Math.round(run.summary.passRate * 100)}% 通过 · ${run.summary.failed} 失败 · 门禁${run.gate?.passed !== false ? "通过" : "失败"} · ${formatTime(run.startedAt)}</span>
+          <span>${Math.round(run.summary.passRate * 100)}% 通过 · ${run.summary.failed} 失败 · 门禁${(run.releaseDecision || run.gate)?.passed !== false ? "通过" : "失败"} · ${formatTime(run.startedAt)}</span>
         </button>`).join("") || `<div class="muted">暂无运行历史。</div>`;
       renderEvalRunDetail(runs.find((item) => item.id === app.selected.evalRun));
     }
@@ -3168,13 +3337,13 @@
       try {
         const job = await api("/api/evals/jobs", {
           method: "POST",
-          body: JSON.stringify({ caseIds: [...evalSelectedCases], datasetId: $("#evalDatasetFilter").value }),
+          body: JSON.stringify({ caseIds: [...evalSelectedCases], datasetId: $("#evalDatasetFilter").value, trialCount: Number($("#evalTrialCount").value || 1) }),
         });
         $("#evalJobStatus").textContent = `${job.name} · queued`;
         for (let attempt = 0; attempt < 80; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 250));
           const current = await api(`/api/evals/jobs/${job.id}`);
-          $("#evalJobStatus").textContent = `${current.name} · ${current.status}${current.error ? ` · ${current.error}` : ""}`;
+          $("#evalJobStatus").textContent = `${current.name} · ${current.status} · ${current.progress?.percent ?? 0}% · ${current.progress?.phase || ""}${current.error ? ` · ${current.error}` : ""}`;
           if (current.status === "completed") {
             app.selected.evalRun = current.runId;
             await loadEvaluation();
@@ -3188,6 +3357,37 @@
       } finally {
         button.disabled = false;
         button.textContent = "运行评测";
+      }
+    }
+
+    async function runAgentEvaluation() {
+      const button = $("#runAgentEvalBtn");
+      button.disabled = true;
+      button.textContent = "Agent 执行中";
+      try {
+        const job = await api("/api/evals/agent-runner", {
+          method: "POST",
+          body: JSON.stringify({ caseIds: [...evalSelectedCases], datasetId: $("#evalDatasetFilter").value, trialCount: Number($("#evalTrialCount").value || 1) }),
+        });
+        $("#evalJobStatus").textContent = `${job.name} · queued`;
+        for (let attempt = 0; attempt < 900; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          const current = await api(`/api/evals/jobs/${job.id}`);
+          $("#evalJobStatus").textContent = `${current.name} · ${current.status} · ${current.progress?.percent ?? 0}% · ${current.progress?.phase || ""}${current.error ? ` · ${current.error}` : ""}`;
+          if (current.status === "completed") {
+            app.selected.evalRun = current.runId;
+            await loadEvaluation();
+            setModuleTab("evaluation", "history");
+            return;
+          }
+          if (["failed", "canceled"].includes(current.status)) throw new Error(current.error || "Agent Runner 任务未完成");
+        }
+        throw new Error("Agent Runner 等待超时，任务仍会在后台继续执行");
+      } catch (error) {
+        alert(`Agent Runner 失败：${error.message}`);
+      } finally {
+        button.disabled = false;
+        button.textContent = "执行 Agent Runner";
       }
     }
 
@@ -3223,7 +3423,7 @@
       ].join("");
       const activeAlerts = (data.alerts || []).filter((item) => item.status === "active");
       $("#observeAlerts").innerHTML = activeAlerts.map((item) => `
-        <div class="alert-item"><span><b>${escapeHtml(item.ruleName)}</b> · ${escapeHtml(item.message)}</span><button class="mini-btn" type="button" data-ack-alert="${item.id}">确认</button></div>
+        <div class="alert-item"><span><b>${escapeHtml(item.ruleName)}</b> · ${badge(escapeHtml(item.severity || "warning"))} · ${escapeHtml(item.message)}</span><button class="mini-btn" type="button" data-ack-alert="${item.id}">确认</button></div>
       `).join("");
       $("#observeSkillRows").innerHTML = (data.skillStats || []).map((item) => `
         <tr><td>${escapeHtml(item.label || item.name)}</td><td>${badge(item.status)}</td><td>${item.calls}</td><td>${item.failed}</td><td>${formatMs(item.avgMs)}</td></tr>
@@ -3244,6 +3444,7 @@
               ${run.modelUsage ? `<span>Token ${Number(run.modelUsage.totalTokens || 0).toLocaleString()}</span><span>$${Number(run.modelUsage.costUsd || 0).toFixed(4)}</span><span>TTFT ${formatMs(run.modelUsage.ttftMs)}</span>` : ""}
               <span>Trace ${escapeHtml(String(run.traceId || run.id).slice(0, 8))}</span>
               ${["failed", "canceled", "timed_out"].includes(run.status) && run.retryable ? `<button class="mini-btn" type="button" data-retry-run="${run.id}">重试</button>` : ""}
+              <button class="mini-btn" type="button" data-import-eval-run="${run.id}">加入评测</button>
             </span>
           </div>
           <div class="run-flow">
@@ -3251,6 +3452,15 @@
           </div>
         </div>
       `).join("") || `<div class="muted">暂无运行记录。发送一条任务后会在这里出现 Trace。</div>`;
+      const pagination = data.pagination || { total: runs.length, limit: runs.length || 1, offset: 0, hasMore: false };
+      const pageStart = pagination.total ? pagination.offset + 1 : 0;
+      const pageEnd = Math.min(pagination.total, pagination.offset + runs.length);
+      $("#observeRunPagination").innerHTML = `
+        <span class="eval-page-status">${pageStart}-${pageEnd} / ${pagination.total} 条</span>
+        <div class="eval-page-actions">
+          <button class="mini-btn" type="button" data-observe-page="previous" ${pagination.offset <= 0 ? "disabled" : ""}>上一页</button>
+          <button class="mini-btn" type="button" data-observe-page="next" ${pagination.hasMore ? "" : "disabled"}>下一页</button>
+        </div>`;
       renderTimeline();
       renderToolTrace();
     }
@@ -4406,6 +4616,21 @@
         await sendTask(target.dataset.retryRun);
         return;
       }
+      if (target?.dataset.importEvalRun) {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+          await api(`/api/evals/import-run/${target.dataset.importEvalRun}`, {
+            method: "POST",
+            body: JSON.stringify({ datasetId: app.evaluation?.datasets?.[0]?.id || "dataset_default" }),
+          });
+          await loadEvaluation();
+          switchView("evaluation");
+        } catch (error) {
+          alert(`加入评测失败：${error.message}`);
+        }
+        return;
+      }
       if (target?.dataset.moduleTab) {
         const [moduleName, tabName] = target.dataset.moduleTab.split(":");
         setModuleTab(moduleName, tabName);
@@ -4445,6 +4670,21 @@
         await api(`/api/evals/jobs/${target.dataset.cancelEvalJob}/cancel`, { method: "POST" });
         await loadEvaluation();
       }
+      if (target?.dataset.diffEvalDataset) {
+        const diff = await api(`/api/evals/datasets/${target.dataset.diffEvalDataset}/diff`);
+        $("#evalDatasetDiff").innerHTML = `<div class="eval-result"><b>v${diff.fromVersion} → v${diff.toVersion}</b><p>新增 ${diff.added.length} · 删除 ${diff.removed.length} · 修改 ${diff.changed.length} · 不变 ${diff.unchanged.length}</p></div>`;
+      }
+      if (target?.dataset.evalDatasetStatus && target?.dataset.evalDatasetId) {
+        await api(`/api/evals/datasets/${target.dataset.evalDatasetId}/lifecycle`, {
+          method: "PUT",
+          body: JSON.stringify({ status: target.dataset.evalDatasetStatus }),
+        });
+        await loadEvaluation();
+      }
+      if (target?.dataset.reviewId) {
+        await api(`/api/evals/reviews/${target.dataset.reviewId}`, { method: "PUT", body: JSON.stringify({ status: target.dataset.reviewStatus }) });
+        await loadEvaluation();
+      }
       if (target?.dataset.selectEvalRun) {
         app.selected.evalRun = target.dataset.selectEvalRun;
         renderEvaluation();
@@ -4462,6 +4702,13 @@
         app.observeFilter = target.dataset.observeFilter;
         document.querySelectorAll(".observe-filter").forEach((btn) => btn.classList.toggle("active", btn.dataset.observeFilter === app.observeFilter));
         renderTimeline();
+      }
+      if (target?.dataset.observePage) {
+        const pagination = app.observability?.pagination || { limit: 50, offset: 0 };
+        const nextOffset = target.dataset.observePage === "next"
+          ? pagination.offset + pagination.limit
+          : Math.max(0, pagination.offset - pagination.limit);
+        await searchObservabilityRuns(nextOffset);
       }
     });
 
@@ -4651,6 +4898,7 @@
     });
     $("#resetObserveRunSearch").addEventListener("click", () => {
       $("#observeRunSearchForm").reset();
+      app.observeRunOffset = 0;
       loadObservability().catch(console.error);
     });
 
@@ -4679,7 +4927,7 @@
       const name = input.value.trim();
       if (!name) return input.focus();
       try {
-        const dataset = await api("/api/evals/datasets", { method: "POST", body: JSON.stringify({ name }) });
+        const dataset = await api("/api/evals/datasets", { method: "POST", body: JSON.stringify({ name, suite: $("#newEvalDatasetSuite").value }) });
         input.value = "";
         await loadEvaluation();
         $("#evalDatasetFilter").value = dataset.id;
@@ -4695,14 +4943,29 @@
       try {
         await api("/api/evals/gate", {
           method: "PUT",
-          body: JSON.stringify({ minPassRate: Number(values.minPassRate) / 100, maxRegressions: Number(values.maxRegressions) }),
+          body: JSON.stringify({ minPassRate: Number(values.minPassRate) / 100, minWeightedPassRate: Number(values.minWeightedPassRate) / 100, maxRegressions: Number(values.maxRegressions), minTrialsPerCase: Number(values.minTrialsPerCase), minConfidenceLowerBound: Number(values.minConfidenceLowerBound) / 100, blockCritical: event.currentTarget.elements.blockCritical.checked, requirePublishedDataset: event.currentTarget.elements.requirePublishedDataset.checked }),
         });
         await loadEvaluation();
       } catch (error) {
         alert(`保存发布门禁失败：${error.message}`);
       }
     });
+    $("#evalProfileForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = formData(event.currentTarget);
+      try {
+        await api("/api/evals/profiles", {
+          method: "POST",
+          body: JSON.stringify({ name: values.name, agentId: values.agentId, objectives: normalizeTags(values.objectives), redLines: normalizeTags(values.redLines), requiredTags: normalizeTags(values.requiredTags), metrics: {}, reviewRules: [] }),
+        });
+        event.currentTarget.reset();
+        await loadEvaluation();
+      } catch (error) {
+        alert(`创建 Profile 失败：${error.message}`);
+      }
+    });
     $("#runEvalBtn").addEventListener("click", runEvaluation);
+    $("#runAgentEvalBtn").addEventListener("click", runAgentEvaluation);
     $("#evalCaseRows").addEventListener("change", (event) => {
       const checkbox = event.target.closest("[data-eval-select]");
       if (!checkbox) return;

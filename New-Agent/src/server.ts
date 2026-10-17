@@ -1,5 +1,5 @@
 import express from "express";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -23,9 +23,45 @@ import { createSessionRuntime } from "./runtime/session-runtime.ts";
 import { safePreview } from "./security/redaction.ts";
 import { discoverSkillPackageTools } from "./skill-tools.ts";
 import {
+  acknowledgeAlert,
+  createRunRecorder,
+  getObservability,
+  getObservedRun,
+  startObservedRun,
+} from "./observability/observability.ts";
+import {
+  createDataset,
+  createEvalCase,
+  createJob,
+  acquireRunnerLease,
+  claimEvalJob,
+  deleteEvalCase,
+  diffDataset,
+  getEvalDashboard,
+  getEvalAudit,
+  getJob,
+  finishEvalJob,
+  readEvalState,
+  renderRunReport,
+  releaseRunnerLease,
+  renewEvalJobLease,
+  requestJobCancellation,
+  runEvaluation,
+  type RunEvalOptions,
+  saveProfile,
+  saveReview,
+  setBaseline,
+  updateEvalCase,
+  updateEvalJobProgress,
+  updateDatasetLifecycle,
+  updateGate,
+  verifyEvalAudit,
+} from "./evals/eval-center.ts";
+import {
   closeMysqlStorage,
   deletePiSession,
   mysqlStorageHealth,
+  recoverStaleObservabilityRuns,
   usesMysqlStorage,
   verifyMysqlStorage,
 } from "./storage/mysql.ts";
@@ -79,7 +115,7 @@ const selectedModel = model;
 const modelLabel = `${selectedModel.provider}/${selectedModel.id}`;
 console.log(`New-Agent 使用模型：${modelLabel}`);
 
-// file 模式会跳过；MySQL 模式只校验连接和课前准备好的五张表。
+// file 模式会跳过；MySQL 模式只校验连接和迁移脚本准备好的必需表。
 // 应用启动期间不会执行 CREATE DATABASE、CREATE TABLE 或结构迁移。
 await verifyMysqlStorage();
 console.log(`数据存储：${usesMysqlStorage() ? "MySQL" : runtimeConfig.storage}`);
@@ -266,6 +302,29 @@ function readSystemPrompt(): string {
   );
 }
 
+function contentHash(value: unknown): string {
+  return createHash("sha256").update(
+    typeof value === "string" ? value : JSON.stringify(value),
+  ).digest("hex");
+}
+
+function buildTargetSnapshot(state: AppState, agentId?: string) {
+  const agent = getActiveAgent(state, agentId);
+  const skillIds = new Set(agent?.skillIds ?? []);
+  const skills = state.skills.filter((item) => skillIds.has(item.id));
+  const tools = state.tools.filter((item) => (agent?.toolNames ?? []).includes(item.name));
+  const systemPrompt = readSystemPrompt();
+  return {
+    agentId: agent?.id,
+    agentConfigHash: contentHash(agent ?? null),
+    promptHash: contentHash(systemPrompt),
+    model: modelLabel,
+    skills: skills.map((item) => ({ id: item.id, version: item.version, hash: contentHash(item) })),
+    toolConfigHash: contentHash(tools),
+    capturedAt: new Date().toISOString(),
+  };
+}
+
 // 审批超时后同步更新 AppState；Registry 会同时把等待中的 Tool 按拒绝恢复。
 async function expireApproval(
   ctx: RuntimeContext,
@@ -373,6 +432,7 @@ const runtimeRegistry = createRuntimeRegistry({
 
 // 会话运行时负责 AgentSession 的创建、恢复、切换和持久化。
 const {
+  createEvaluationSession,
   getConversationSession,
   getConversationTree,
   navigateConversationTree,
@@ -391,19 +451,44 @@ const {
 const app = express();
 const port = runtimeConfig.port;
 
+type AsyncHandler = (
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction,
+) => Promise<unknown>;
+
+/** Express 4 不会自动转发 Promise rejection，统一交给末尾错误处理中间件。 */
+function asyncRoute(handler: AsyncHandler): express.RequestHandler {
+  return (request, response, next) => {
+    void handler(request, response, next).catch(next);
+  };
+}
+
 app.disable("x-powered-by");
 app.use(express.json({ limit: "64kb" }));
 app.use(express.static("public"));
 
-// 观测面板可以直接复用这个存储健康信号。
-app.get("/health", async (_request, response) => {
+// Liveness only proves that the event loop can answer; it must not depend on MySQL.
+app.get("/health/live", (_request, response) => {
+  response.set("Cache-Control", "no-store").json({
+    ok: true,
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Readiness includes required infrastructure and is also kept at /health for compatibility.
+const readinessHandler = asyncRoute(async (_request, response) => {
   const storage = await mysqlStorageHealth();
-  response.status(storage.healthy ? 200 : 503).json({
+  response.set("Cache-Control", "no-store").status(storage.healthy ? 200 : 503).json({
     ok: storage.healthy,
     model: modelLabel,
     storage,
+    timestamp: new Date().toISOString(),
   });
 });
+app.get("/health", readinessHandler);
+app.get("/health/ready", readinessHandler);
 
 function parseCookies(header?: string): Record<string, string> {
   return Object.fromEntries(
@@ -741,27 +826,408 @@ app.get("/api/state", async (_request, response) => {
   });
 });
 
-app.get("/api/observability", (_request, response) => {
-  response.json({
-    overview: {},
-    runs: [],
-    alerts: [],
-    skillStats: [],
-    toolStats: [],
-    trends: [],
-  });
-});
+app.get("/api/observability", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  response.json(await getObservability(user.id, {
+    query: String(request.query.query ?? request.query.q ?? ""),
+    status: String(request.query.status ?? ""),
+    from: request.query.from ? String(request.query.from) : undefined,
+    to: request.query.to ? String(request.query.to) : undefined,
+    limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
+    offset: request.query.offset === undefined ? undefined : Number(request.query.offset),
+  }));
+}));
 
-app.get("/api/evals", (_request, response) => {
-  response.json({
-    summary: { totalCases: 0 },
-    cases: [],
-    datasets: [],
-    runs: [],
-    jobs: [],
-    gate: { minPassRate: 1, maxRegressions: 0 },
+app.get("/api/observability/runs", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  const data = await getObservability(user.id, {
+    query: String(request.query.query ?? request.query.q ?? ""),
+    status: String(request.query.status ?? ""),
+    from: request.query.from ? String(request.query.from) : undefined,
+    to: request.query.to ? String(request.query.to) : undefined,
+    limit: request.query.limit === undefined ? 100 : Number(request.query.limit),
+    offset: request.query.offset === undefined ? 0 : Number(request.query.offset),
   });
-});
+  response.json({ runs: data.runs, events: data.events, pagination: data.pagination });
+}));
+
+app.post("/api/observability/alerts/:id/ack", asyncRoute(async (request, response) => {
+  const ok = await acknowledgeAlert(requestUser(response).id, request.params.id);
+  response.status(ok ? 200 : 404).json(ok ? { ok } : { error: "告警不存在" });
+}));
+
+app.get("/api/evals", asyncRoute(async (_request, response) => {
+  response.json(await getEvalDashboard(requestUser(response).id));
+}));
+
+app.get("/api/evals/audit", asyncRoute(async (request, response) => {
+  response.json(await getEvalAudit(requestUser(response).id, {
+    action: request.query.action ? String(request.query.action) : undefined,
+    entityType: request.query.entityType ? String(request.query.entityType) : undefined,
+    limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
+    offset: request.query.offset === undefined ? undefined : Number(request.query.offset),
+  }));
+}));
+
+app.get("/api/evals/audit/verify", asyncRoute(async (_request, response) => {
+  const integrity = await verifyEvalAudit(requestUser(response).id);
+  response.status(integrity.valid ? 200 : 409).json(integrity);
+}));
+
+app.post("/api/evals/cases", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try { response.status(201).json(await createEvalCase(user.id, request.body, user.id)); }
+  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "创建用例失败" }); }
+}));
+
+app.put("/api/evals/cases/:id", asyncRoute(async (request, response) => {
+  try {
+    const user = requestUser(response);
+    const item = await updateEvalCase(user.id, request.params.id, request.body, user.id);
+    response.status(item ? 200 : 404).json(item ?? { error: "评测用例不存在" });
+  } catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "更新用例失败" }); }
+}));
+
+app.delete("/api/evals/cases/:id", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  const ok = await deleteEvalCase(user.id, request.params.id, user.id);
+  response.status(ok ? 200 : 404).json(ok ? { ok } : { error: "评测用例不存在" });
+}));
+
+app.post("/api/evals/datasets", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try { response.status(201).json(await createDataset(user.id, request.body ?? {}, user.id)); }
+  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "创建数据集失败" }); }
+}));
+
+app.put("/api/evals/datasets/:id/lifecycle", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try {
+    const dataset = await updateDatasetLifecycle(user.id, request.params.id, request.body ?? {}, user.id);
+    response.status(dataset ? 200 : 404).json(dataset ?? { error: "数据集不存在" });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "数据集生命周期参数无效" });
+  }
+}));
+
+app.get("/api/evals/datasets/:id/diff", asyncRoute(async (request, response) => {
+  const diff = await diffDataset(requestUser(response).id, request.params.id);
+  response.status(diff ? 200 : 404).json(diff ?? { error: "数据集不存在" });
+}));
+
+app.post("/api/evals/profiles", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try { response.status(201).json(await saveProfile(user.id, request.body, undefined, user.id)); }
+  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "Profile 参数无效" }); }
+}));
+
+app.put("/api/evals/profiles/:id", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try { response.json(await saveProfile(user.id, request.body, request.params.id, user.id)); }
+  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "Profile 参数无效" }); }
+}));
+
+app.put("/api/evals/gate", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try { response.json(await updateGate(user.id, request.body, user.id)); }
+  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "门禁参数无效" }); }
+}));
+
+app.post("/api/evals/runs", asyncRoute(async (request, response) => {
+  try { response.status(201).json(await runEvaluation(requestUser(response).id, request.body)); }
+  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "运行评测失败" }); }
+}));
+
+async function executeAgentEvaluation(
+  user: AuthUser,
+  options: RunEvalOptions,
+  jobId?: string,
+  jobLeaseId?: string,
+): Promise<Awaited<ReturnType<typeof runEvaluation>>> {
+  const evalState = await readEvalState(user.id);
+  const requestedIds = Array.isArray(options.caseIds) ? options.caseIds.map(String) : [];
+  const cases = evalState.cases.filter((item) =>
+    item.enabled && item.category === "agent_task" &&
+    (!options.datasetId || item.datasetId === options.datasetId) &&
+    (!requestedIds.length || requestedIds.includes(item.id))
+  );
+  if (!cases.length) throw new Error("没有可执行的 agent_task 用例");
+  if (cases.length > runtimeConfig.evalMaxCasesPerRun) {
+    throw new Error(`单次评测最多运行 ${runtimeConfig.evalMaxCasesPerRun} 条用例`);
+  }
+  const trialCount = Number(options.trialCount ?? 1);
+  if (!Number.isInteger(trialCount) || trialCount <= 0 || trialCount > runtimeConfig.evalMaxTrialsPerCase) {
+    throw new Error(`trialCount 必须是 1–${runtimeConfig.evalMaxTrialsPerCase} 的整数`);
+  }
+  const totalExecutions = cases.length * trialCount;
+  const outputLimitPerTrial = Math.min(
+    runtimeConfig.evalMaxOutputChars,
+    Math.max(1_000, Math.floor(runtimeConfig.evalMaxEvidenceBytes / Math.max(1, totalExecutions))),
+  );
+  if (jobId && jobLeaseId) {
+    await updateEvalJobProgress(user.id, jobId, jobLeaseId, { completed: 0, total: totalExecutions, phase: "preparing" });
+  }
+
+  const state = await readState(selectedModel, user.id);
+  const timeoutFor = (agentId: string) => Math.max(1_000, Number(getActiveAgent(state, agentId)?.timeoutMs || 120_000));
+  const agentIds = cases.map((item) => String(item.agentId || options.agentId || getActiveAgent(state)?.id || ""));
+  const leaseMs = Math.min(24 * 60 * 60 * 1000, agentIds.reduce((sum, agentId) => sum + timeoutFor(agentId) * trialCount, 60_000));
+  const runnerLeaseId = await acquireRunnerLease(user.id, leaseMs);
+  if (!runnerLeaseId) throw new Error("已有 Agent Runner 正在执行");
+
+  const evaluationRuntime = runtimeRegistry.createDetachedRuntime(user);
+  try {
+    const evidenceByCase: Record<string, unknown[]> = {};
+    for (let index = 0; index < cases.length; index += 1) {
+      const item = cases[index];
+      const agentId = agentIds[index];
+      evidenceByCase[item.id] = [];
+      for (let trialIndex = 0; trialIndex < trialCount; trialIndex += 1) {
+        if (jobId && (await getJob(user.id, jobId))?.cancelRequested) throw new Error("评测任务已取消");
+        const completed = index * trialCount + trialIndex;
+        if (jobId && jobLeaseId) {
+          await updateEvalJobProgress(user.id, jobId, jobLeaseId, {
+            completed, total: totalExecutions, phase: `executing_trial_${trialIndex + 1}`, currentCaseId: item.id,
+          });
+        }
+        const session = await createEvaluationSession(evaluationRuntime, state, agentId);
+        let output = "";
+        let outputTruncated = false;
+        const tools: string[] = [];
+        let status = "succeeded";
+        const started = Date.now();
+        let timedOut = false;
+        let canceled = false;
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          void session.abort();
+        }, timeoutFor(agentId));
+        const cancellationPoll = jobId ? setInterval(() => {
+          void getJob(user.id, jobId).then((job) => {
+            if (job?.cancelRequested) {
+              canceled = true;
+              void session.abort();
+            }
+          }).catch((error) => console.error("[eval-runner:cancel-check]", error));
+        }, 1_000) : undefined;
+        cancellationPoll?.unref();
+        const unsubscribe = session.subscribe((event) => {
+          if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+            const delta = event.assistantMessageEvent.delta || "";
+            const remaining = Math.max(0, outputLimitPerTrial - output.length);
+            output += delta.slice(0, remaining);
+            if (delta.length > remaining) outputTruncated = true;
+          }
+          if (event.type === "tool_execution_start" && tools.length < 1_000) tools.push(event.toolName);
+        });
+        try {
+          await session.prompt(String(item.prompt));
+          if (timedOut) status = "timed_out";
+        } catch (error) {
+          if (canceled) throw new Error("评测任务已取消");
+          status = timedOut ? "timed_out" : "failed";
+          output ||= error instanceof Error ? error.message : "Agent Runner 执行失败";
+        } finally {
+          clearTimeout(timeout);
+          if (cancellationPoll) clearInterval(cancellationPoll);
+          unsubscribe();
+          session.dispose();
+        }
+        evidenceByCase[item.id].push({
+          output,
+          status,
+          tools,
+          latencyMs: Date.now() - started,
+          executedAt: new Date().toISOString(),
+          outputTruncated,
+        });
+        if (jobId && jobLeaseId) {
+          await updateEvalJobProgress(user.id, jobId, jobLeaseId, {
+            completed: completed + 1, total: totalExecutions, phase: "evaluating", currentCaseId: item.id,
+          });
+        }
+      }
+    }
+    return runEvaluation(user.id, {
+      caseIds: cases.map((item) => item.id),
+      datasetId: options.datasetId,
+      profileId: options.profileId,
+      name: options.name || "Agent Runner 回归评测",
+      jobId,
+      trialCount,
+      targetSnapshot: {
+        ...buildTargetSnapshot(state, options.agentId),
+        agentIds: [...new Set(agentIds)],
+        safeEvaluationTools: ["read", "grep", "find", "ls"],
+      },
+      evidenceByCase,
+    });
+  } finally {
+    await releaseRunnerLease(user.id, runnerLeaseId).catch((error) => {
+      console.error("[eval-runner:release-lease]", error);
+    });
+  }
+}
+
+const activeEvalWorkers = new Set<string>();
+async function processEvalJobs(ownerId: string): Promise<void> {
+  if (activeEvalWorkers.has(ownerId)) return;
+  activeEvalWorkers.add(ownerId);
+  try {
+    while (true) {
+      const job = await claimEvalJob(ownerId);
+      if (!job?.leaseId) return;
+      const leaseHeartbeat = setInterval(() => {
+        void renewEvalJobLease(ownerId, job.id, job.leaseId!, 90_000).catch((error) => {
+          console.error("[eval-job:lease-renewal]", error);
+        });
+      }, 30_000);
+      leaseHeartbeat.unref();
+      try {
+        const credential = users.findById(ownerId);
+        if (!credential) throw new Error("评测任务所属用户不存在");
+        const user: AuthUser = { id: credential.id, username: credential.username, displayName: credential.displayName };
+        const currentEvalState = await readEvalState(ownerId);
+        const previousRun = currentEvalState.runs.find((item) => item.jobId === job.id);
+        if (!job.payload?.runner && !previousRun) {
+          const selectedCount = currentEvalState.cases.filter((item) =>
+            item.enabled && (!job.payload?.datasetId || item.datasetId === job.payload.datasetId) &&
+            (!job.payload?.caseIds?.length || job.payload.caseIds.includes(item.id))
+          ).length;
+          await updateEvalJobProgress(ownerId, job.id, job.leaseId, {
+            completed: 0, total: selectedCount, phase: "evaluating",
+          });
+        }
+        const run = previousRun ?? (job.payload?.runner
+          ? await executeAgentEvaluation(user, job.payload, job.id, job.leaseId)
+          : await runEvaluation(ownerId, { ...(job.payload ?? {}), jobId: job.id }));
+        await finishEvalJob(ownerId, job.id, job.leaseId, {
+          status: "completed", runId: run.id, error: undefined,
+        });
+      } catch (error) {
+        await finishEvalJob(ownerId, job.id, job.leaseId, {
+          status: "failed",
+          runId: undefined,
+          error: error instanceof Error ? error.message : "评测任务失败",
+        });
+      } finally {
+        clearInterval(leaseHeartbeat);
+      }
+    }
+  } finally {
+    activeEvalWorkers.delete(ownerId);
+  }
+}
+
+function scheduleEvalJobs(ownerId: string): void {
+  void processEvalJobs(ownerId).catch((error) => {
+    console.error("[eval-job:worker-error]", error);
+  });
+}
+
+app.post("/api/evals/jobs", asyncRoute(async (request, response) => {
+  const ownerId = requestUser(response).id;
+  try {
+    const job = await createJob(ownerId, "评测任务", request.body ?? {});
+    response.status(202).json(job);
+    setImmediate(() => scheduleEvalJobs(ownerId));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "创建评测任务失败";
+    response.status(message.includes("过多") ? 429 : 400).json({ error: message });
+  }
+}));
+
+app.get("/api/evals/jobs/:id", asyncRoute(async (request, response) => {
+  const job = await getJob(requestUser(response).id, request.params.id);
+  response.status(job ? 200 : 404).json(job ?? { error: "评测任务不存在" });
+}));
+
+app.post("/api/evals/jobs/:id/cancel", asyncRoute(async (request, response) => {
+  const job = await getJob(requestUser(response).id, request.params.id);
+  if (!job) return response.status(404).json({ error: "评测任务不存在" });
+  response.json(await requestJobCancellation(requestUser(response).id, job.id));
+}));
+
+app.post("/api/evals/runs/:id/baseline", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  const state = await readEvalState(user.id);
+  const run = state.runs.find((item) => item.id === request.params.id);
+  if (!run) return response.status(404).json({ error: "评测运行不存在" });
+  if ((run.releaseDecision ?? run.gate).decision !== "approved") {
+    return response.status(409).json({ error: "只有 approved 的评测运行可以设为基线" });
+  }
+  const ok = await setBaseline(user.id, request.params.id, user.id);
+  response.status(ok ? 200 : 409).json(ok ? { ok } : { error: "基线状态已变化，请刷新后重试" });
+}));
+
+app.put("/api/evals/reviews/:id", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try {
+    const review = await saveReview(user.id, request.params.id, request.body?.status, request.body?.note, user.id);
+    response.status(review ? 200 : 404).json(review ?? { error: "复核记录不存在" });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "复核参数无效" });
+  }
+}));
+
+app.get("/api/evals/runs/:id/report.md", asyncRoute(async (request, response) => {
+  const state = await readEvalState(requestUser(response).id);
+  const run = state.runs.find((item) => item.id === request.params.id);
+  if (!run) return response.status(404).json({ error: "评测运行不存在" });
+  response.type("text/markdown; charset=utf-8").send(renderRunReport(run));
+}));
+
+app.post("/api/evals/import-run/:runId", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  const observed = await getObservedRun(user.id, request.params.runId);
+  if (!observed) return response.status(404).json({ error: "观测运行不存在" });
+  const tools = observed.events
+    .filter((event) => event.type === "tool_start" && event.toolName)
+    .map((event) => event.toolName as string);
+  try {
+    const item = await createEvalCase(user.id, {
+      name: String(request.body?.name || `回归：${observed.run.prompt}`).slice(0, 120),
+      description: "从真实可观测运行导入，请复核并补充业务断言。",
+      category: "agent_task",
+      tags: ["observability-import", ...(Array.isArray(request.body?.tags) ? request.body.tags : [])],
+      datasetId: String(request.body?.datasetId || "dataset_default"),
+      severity: request.body?.severity || "medium",
+      weight: Number(request.body?.weight || 1),
+      owner: user.displayName,
+      enabled: true,
+      prompt: observed.run.prompt,
+      sourceRunId: observed.run.id,
+      sourceTargetSnapshot: observed.run.targetSnapshot,
+      evidence: {
+        output: observed.run.outputPreview,
+        status: observed.run.status,
+        tools,
+        latencyMs: observed.run.durationMs,
+      },
+      expected: { status: "succeeded", contains: [], notContains: [], requiredTools: [], forbiddenTools: [] },
+    }, user.id);
+    response.status(201).json(item);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "导入运行失败" });
+  }
+}));
+
+app.post("/api/evals/agent-runner", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  const payload: RunEvalOptions = {
+    ...request.body,
+    caseIds: Array.isArray(request.body?.caseIds) ? request.body.caseIds.map(String) : [],
+    runner: true,
+  };
+  try {
+    const job = await createJob(user.id, "Agent Runner 评测任务", payload);
+    response.status(202).json(job);
+    setImmediate(() => scheduleEvalJobs(user.id));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "创建 Agent Runner 任务失败";
+    response.status(message.includes("过多") ? 429 : 400).json({ error: message });
+  }
+}));
 
 // -----------------------------------------------------------------------------
 // 6. Agent、Skill、Tool 管理接口
@@ -1174,7 +1640,38 @@ app.post("/chat", async (request, response) => {
     return response.status(500).json({ error: text });
   }
 
-  const runId = randomUUID();
+  let observedRecorder: ReturnType<typeof createRunRecorder> | undefined;
+  let observationFinished = false;
+  let observedRunId: string | undefined;
+  async function finishObservation(status: "succeeded" | "failed" | "canceled", error?: unknown): Promise<void> {
+    if (!observedRecorder || observationFinished) return;
+    // 先标记，避免观测后端失败时 finally 重复写入同一个终止事件。
+    observationFinished = true;
+    try {
+      await observedRecorder.finish(status, error);
+    } catch (finishError) {
+      console.error("[observability:finish-error]", finishError instanceof Error ? finishError.message : String(finishError));
+    }
+  }
+  try {
+    const activeAgent = getActiveAgent(state, conversation.agentId);
+    const enabledSkillIds = new Set(activeAgent?.skillIds ?? []);
+    const observedRun = await startObservedRun(user.id, {
+      conversationId,
+      agentId: conversation.agentId,
+      model: modelLabel,
+      prompt: message,
+      loadedSkills: state.skills.filter((item) => enabledSkillIds.has(item.id) && item.status === "PROD").map((item) => item.name),
+      activeTools: activeAgent?.toolNames ?? [],
+      targetSnapshot: buildTargetSnapshot(state, conversation.agentId),
+    });
+    observedRunId = observedRun.id;
+    observedRecorder = createRunRecorder(user.id, observedRun);
+  } catch (error) {
+    console.error("[observability:start-error]", error instanceof Error ? error.message : String(error));
+  }
+
+  const runId = observedRunId ?? randomUUID();
   let clientClosed = false;
   let assistantText = "";
 
@@ -1204,6 +1701,7 @@ app.post("/chat", async (request, response) => {
 
   // 必须先订阅，再调用 prompt()，否则快速返回时可能漏掉首个事件。
   const unsubscribe = session.subscribe((event) => {
+    observedRecorder?.consumePiEvent(event);
     // 后端单独累计完整文本，用于写入业务会话记录。
     if (
       event.type === "message_update" &&
@@ -1249,7 +1747,9 @@ app.post("/chat", async (request, response) => {
       writeSse(response, "status", { state: "idle", label: "空闲" });
       writeSse(response, "done", { runId });
     }
+    await finishObservation("succeeded");
   } catch (error) {
+    await finishObservation(clientClosed ? "canceled" : "failed", error);
     if (!clientClosed) {
       const text = safePreview(
         error instanceof Error ? error.message : "Agent 执行失败",
@@ -1259,6 +1759,8 @@ app.post("/chat", async (request, response) => {
     }
   } finally {
     unsubscribe();
+
+    await finishObservation(clientClosed ? "canceled" : "failed", "运行未正常结束");
 
     // 无论本轮成功、失败还是取消，都以最新 AppState 保存完整 Pi entries 和叶子游标。
     try {
@@ -1291,12 +1793,36 @@ app.post("/chat", async (request, response) => {
 // 9. 启动与退出清理
 // -----------------------------------------------------------------------------
 
+app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
+  console.error("[http:unhandled-error]", error instanceof Error ? error.stack ?? error.message : String(error));
+  if (response.headersSent) return next(error);
+  response.status(500).json({ error: "服务暂时不可用，请稍后重试" });
+});
+
 const server = app.listen(port, () => {
   console.log(`New-Agent：http://localhost:${port}`);
+  for (const user of users.list()) scheduleEvalJobs(user.id);
+  void recoverStaleObservabilityRuns(runtimeConfig.observabilityStaleRunMs).catch((error) => {
+    console.error("[observability:recovery-error]", error);
+  });
 });
+
+const evalRecoveryTimer = setInterval(() => {
+  for (const user of users.list()) scheduleEvalJobs(user.id);
+}, 15_000);
+evalRecoveryTimer.unref();
+
+const observabilityRecoveryTimer = setInterval(() => {
+  void recoverStaleObservabilityRuns(runtimeConfig.observabilityStaleRunMs).catch((error) => {
+    console.error("[observability:recovery-error]", error);
+  });
+}, 5 * 60_000);
+observabilityRecoveryTimer.unref();
 
 function shutdown(signal: string): void {
   console.log(`收到 ${signal}，正在释放会话资源`);
+  clearInterval(evalRecoveryTimer);
+  clearInterval(observabilityRecoveryTimer);
   runtimeRegistry.disposeAll();
   server.close(() => {
     // 等连接池正常关闭后再退出，避免丢失仍在完成中的数据库操作。

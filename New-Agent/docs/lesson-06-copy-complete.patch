@@ -1,0 +1,3922 @@
+diff --git a/.env.example b/.env.example
+index 0225104..d946bc4 100644
+--- a/.env.example
++++ b/.env.example
+@@ -3,6 +3,8 @@
+ 
+ # PORT=3100
+ # AGENT_MODEL=provider/model-id
++# 正式环境取消注释后会启用启动安全校验。
++# NODE_ENV=production
+ 
+ # 默认使用 MySQL；需要验证文件回退时再取消注释。
+ # NEW_AGENT_STORAGE=file
+@@ -16,6 +18,18 @@
+ # MYSQL_CONNECTION_LIMIT=10
+ # MYSQL_CONNECT_TIMEOUT_MS=5000
+ 
++# 观测告警阈值：单次运行耗时与成本达到阈值时生成活动告警。
++# OBSERVABILITY_ALERT_DURATION_MS=120000
++# OBSERVABILITY_ALERT_COST_USD=1
++# OBSERVABILITY_STALE_RUN_MS=1800000
++
++# 评测资源上限：单次用例数、每用户存储用例数、单个 Agent 用例输出字符数、单用例 Trial 数。
++# EVAL_MAX_CASES_PER_RUN=200
++# EVAL_MAX_STORED_CASES=2000
++# EVAL_MAX_OUTPUT_CHARS=200000
++# EVAL_MAX_TRIALS_PER_CASE=20
++# EVAL_MAX_EVIDENCE_BYTES=16777216
++
+ # 正式部署时请覆盖 Cookie 签名密钥，并在 HTTPS 环境开启 Secure。
+ # AUTH_SECRET=至少32位随机字符串
+ # AUTH_COOKIE_SECURE=true
+diff --git a/database/002-observability.sql b/database/002-observability.sql
+new file mode 100644
+index 0000000..fc25266
+--- /dev/null
++++ b/database/002-observability.sql
+@@ -0,0 +1,42 @@
++USE `new_agent`;
++
++CREATE TABLE IF NOT EXISTS `observability_runs` (
++  `owner_id` VARCHAR(191) NOT NULL,
++  `run_id` VARCHAR(191) NOT NULL,
++  `started_at` TIMESTAMP(3) NOT NULL,
++  `finished_at` TIMESTAMP(3) NULL,
++  `run_json` JSON NOT NULL,
++  PRIMARY KEY (`owner_id`, `run_id`),
++  KEY `idx_observability_runs_owner_started` (`owner_id`, `started_at`),
++  KEY `idx_observability_runs_finished` (`finished_at`)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
++
++CREATE TABLE IF NOT EXISTS `observability_events` (
++  `owner_id` VARCHAR(191) NOT NULL,
++  `event_id` VARCHAR(191) NOT NULL,
++  `run_id` VARCHAR(191) NOT NULL,
++  `created_at` TIMESTAMP(3) NOT NULL,
++  `event_json` JSON NOT NULL,
++  PRIMARY KEY (`owner_id`, `event_id`),
++  KEY `idx_observability_events_run_created` (`owner_id`, `run_id`, `created_at`),
++  CONSTRAINT `fk_observability_events_run`
++    FOREIGN KEY (`owner_id`, `run_id`) REFERENCES `observability_runs` (`owner_id`, `run_id`)
++    ON DELETE CASCADE
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
++
++CREATE TABLE IF NOT EXISTS `observability_alerts` (
++  `owner_id` VARCHAR(191) NOT NULL,
++  `alert_id` VARCHAR(191) NOT NULL,
++  `run_id` VARCHAR(191) NOT NULL,
++  `status` ENUM('active', 'acknowledged') NOT NULL,
++  `created_at` TIMESTAMP(3) NOT NULL,
++  `alert_json` JSON NOT NULL,
++  PRIMARY KEY (`owner_id`, `alert_id`),
++  KEY `idx_observability_alerts_owner_status` (`owner_id`, `status`, `created_at`),
++  CONSTRAINT `fk_observability_alerts_run`
++    FOREIGN KEY (`owner_id`, `run_id`) REFERENCES `observability_runs` (`owner_id`, `run_id`)
++    ON DELETE CASCADE
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
++
++INSERT IGNORE INTO `schema_migrations` (`version`)
++VALUES ('002_observability_rows');
+diff --git a/docs/production-runtime.md b/docs/production-runtime.md
+new file mode 100644
+index 0000000..6344bb7
+--- /dev/null
++++ b/docs/production-runtime.md
+@@ -0,0 +1,63 @@
++# 观测与评测运行时
++
++## 数据边界
++
++观测和评测数据按登录用户隔离。MySQL 模式下，评测治理状态存储在带版本号的
++`app_documents`，所有 read-modify-write 使用乐观锁；高频观测数据分别逐行写入
++`observability_runs`、`observability_events` 和 `observability_alerts`。file 模式写入
++`data/documents/<userId>/` 并使用进程内串行化和原子替换。Run 最多保留 500 条，
++旧 Run 在 MySQL 中删除时由外键级联清理事件和告警。
++
++所有输入、输出、Tool 参数和错误在进入观测存储前都会通过 `safePreview()` 脱敏并
++截断。Pi Session 的完整上下文仍只保存在 `pi_sessions`，观测数据不能用于恢复会话。
++
++## 观测采集
++
++`POST /chat` 创建 Run，然后把同一个 Pi `AgentSession` 的事件同时发送给 SSE 翻译器
++和观测记录器。记录器采集首 Token、模型 usage、重试以及 Tool 生命周期。纯提示词
++Skill 只有“已加载”记录，不宣称模型实际调用过它。
++
++观测故障不会阻断聊天主链路；启动记录失败时服务会写错误日志并继续生成。
++Run 查询支持 `status`、`query`、`from`、`to`、`limit` 和 `offset`，返回分页元数据。
++失败、单次耗时超限和单次成本超限会生成告警；阈值可通过
++`OBSERVABILITY_ALERT_DURATION_MS` 与 `OBSERVABILITY_ALERT_COST_USD` 配置。
++运行结束时仍未闭合的 Tool 调用会自动补写 timeout/aborted/failed 终止事件并触发告警，
++避免 Trace 永久显示为 running。Provider 返回的 usage 会先做有限非负数校验。
++
++## 评测执行
++
++确定性用例由 `src/evals/evaluator.ts` 执行。运行时会冻结用例、数据集、Profile 和
++目标快照，随后计算普通通过率、加权通过率、分类结果、基线差异及发布门禁。
++
++Agent Runner 使用独立的内存 `SessionManager`，不会读写业务会话。出于安全考虑，
++当前只开放 `read`、`grep`、`find`、`ls` 四个只读内置 Tool。每个用例运行结束后会
++销毁 Session，并把输出、Tool 轨迹、状态和延迟作为 `agent_task` 证据。
++
++确定性任务和 Agent Runner 都通过异步 Job 执行，payload、尝试次数、租约和取消状态
++会持久化；服务启动及周期扫描时会重新领取过期任务，运行中通过心跳续租。Agent Runner
++使用跨实例租约阻止同一用户并发执行，取消任务时会中止当前隔离 Session。当前 Worker
++仍与 Web 服务同进程部署，生产扩缩容前应结合容量目标决定是否拆为独立 Worker。
++Job 会记录阶段、当前用例、完成数量和百分比。用例、数据集、Profile、门禁、基线与
++人工复核的变更会写入仅追加的审计记录，保存操作者、时间和变更前后内容哈希。
++新审计记录还包含前序哈希与自身哈希，可通过接口验证内容和顺序是否被意外改写；这不是
++外部不可变审计仓库的替代品，高合规场景仍应把审计事件同步到独立 SIEM/WORM 存储。
++单次运行用例数、每用户用例总数和 Agent 证据输出长度分别由
++`EVAL_MAX_CASES_PER_RUN`、`EVAL_MAX_STORED_CASES`、`EVAL_MAX_OUTPUT_CHARS` 限制；
++单个用例配置不得超过 64KB，避免异常请求造成内存和文档存储膨胀。
++
++## 生产启动与探针
++
++设置 `NODE_ENV=production` 后，服务会拒绝使用 file 存储、默认数据库密码、默认或少于
++32 字符的 Cookie 签名密钥，以及未开启 Secure 的 Cookie。`GET /health/live` 只检查进程
++是否能响应；`GET /health/ready` 检查存储连接与必需表，原 `/health` 保持为就绪探针别名。
++
++## API
++
++- `GET /api/observability`：聚合指标、Run、Trace、告警和 Tool/Skill 统计。
++- `GET /api/observability/runs`：搜索及筛选 Run。
++- `POST /api/evals/agent-runner`：执行真实 Agent 回归。
++- `POST /api/evals/import-run/:runId`：从观测 Run 创建待复核用例。
++- `GET /api/evals/audit/verify`：验证评测治理审计哈希链。
++- `GET /api/evals/runs/:id/report.md`：导出冻结的 Markdown 报告。
++
++其余用例、数据集、Profile、门禁、Job、基线和复核接口见 `src/server.ts`。
+diff --git a/public/index.html b/public/index.html
+index b9d17c0..d4cf7d4 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -2276,6 +2276,7 @@
+                   </div>
+                 </form>
+                 <div class="run-list" id="observeRunList"></div>
++                <div class="eval-pagination" id="observeRunPagination"></div>
+               </div>
+               <div class="table-card observe-trace observe-fixed">
+                 <h2>Trace 时间线</h2>
+@@ -2297,13 +2298,17 @@
+             <div><h1>评测中心</h1><p>管理确定性评测用例、运行回归评测，并用基线识别能力退化。</p></div>
+             <div class="form-actions">
+               <button class="mini-btn" id="newEvalCaseBtn" type="button">新建用例</button>
++              <button class="mini-btn" id="runAgentEvalBtn" type="button">执行 Agent Runner</button>
+               <button class="primary-btn" id="runEvalBtn" type="button">运行评测</button>
+             </div>
+           </div>
+           <div class="module-tabs" data-module-tabs="evaluation" role="tablist" aria-label="评测中心视图">
+             <button class="module-tab active" type="button" role="tab" aria-selected="true" data-module-tab="evaluation:cases">用例管理</button>
++            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:datasets">数据集治理</button>
+             <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:trends">质量趋势</button>
++            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:reports">报告中心</button>
+             <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:history">运行历史</button>
++            <button class="module-tab" type="button" role="tab" aria-selected="false" data-module-tab="evaluation:audit">审计日志</button>
+           </div>
+           <section class="module-panel eval-case-workspace" data-module-panel="evaluation:cases">
+             <div class="stats" id="evalStats"></div>
+@@ -2314,6 +2319,8 @@
+                 <div class="compact-form">
+                   <label>当前数据集<select id="evalDatasetFilter"></select></label>
+                   <label>新数据集<input id="newEvalDatasetName" placeholder="核心业务回归集" /></label>
++                  <label>Suite<select id="newEvalDatasetSuite"><option value="regression">Regression</option><option value="capability">Capability</option><option value="canary">Canary</option><option value="shadow">Shadow</option><option value="adversarial">Adversarial</option></select></label>
++                  <label>每条 Trial 数<input id="evalTrialCount" type="number" min="1" max="20" value="3" /></label>
+                   <button class="mini-btn" id="createEvalDatasetBtn" type="button">创建</button>
+                 </div>
+               </div>
+@@ -2321,7 +2328,12 @@
+                 <h2>发布门禁</h2>
+                 <form class="compact-form" id="evalGateForm">
+                   <label>最低通过率<input name="minPassRate" type="number" min="0" max="100" step="1" /></label>
++                  <label>最低加权通过率<input name="minWeightedPassRate" type="number" min="0" max="100" step="1" /></label>
+                   <label>最大回归数<input name="maxRegressions" type="number" min="0" step="1" /></label>
++                  <label>最少 Trial/用例<input name="minTrialsPerCase" type="number" min="1" max="20" step="1" /></label>
++                  <label>95% CI 下界<input name="minConfidenceLowerBound" type="number" min="0" max="100" step="1" /></label>
++                  <label><input name="blockCritical" type="checkbox" checked /> Critical 失败阻断</label>
++                  <label><input name="requirePublishedDataset" type="checkbox" checked /> 仅已发布数据集可放行</label>
+                   <button class="mini-btn" type="submit">保存</button>
+                 </form>
+               </div>
+@@ -2341,7 +2353,7 @@
+                 </label>
+                 <label class="filter-control filter-select" aria-label="筛选评测类型">
+                   <span class="filter-label">类型</span>
+-                  <select id="evalCaseFilter"><option value="all">全部</option><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option></select>
++                  <select id="evalCaseFilter"><option value="all">全部</option><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option><option value="agent_task">Agent 任务</option><option value="semantic_judge">语义裁判</option></select>
+                 </label>
+               </div>
+               <div class="table-scroll">
+@@ -2355,7 +2367,7 @@
+                 <input type="hidden" name="id" />
+                 <label>名称<input name="name" required /></label>
+                 <label>说明<textarea name="description"></textarea></label>
+-                <label>类型<select name="category" id="evalCategory"><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option></select></label>
++                <label>类型<select name="category" id="evalCategory"><option value="policy">Tool 策略</option><option value="structured_output">结构化输出</option><option value="assertion">通用断言</option><option value="trajectory">调用轨迹</option><option value="agent_task">Agent 任务</option><option value="semantic_judge">语义裁判</option></select></label>
+                 <label>标签<input name="tags" placeholder="安全,回归" /></label>
+                 <label>所属数据集<select name="datasetId" id="evalDatasetId"></select></label>
+                 <label>严重级别<select name="severity"><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select></label>
+@@ -2393,25 +2405,75 @@
+                     <label>期望轨迹 JSON<textarea name="trajectoryExpected" placeholder='{"sequence":["read","write"],"maxCalls":2}'></textarea></label>
+                   </div>
+                 </div>
++                <div class="eval-case-panel" data-eval-panel="agent_task" hidden>
++                  <div class="form-grid">
++                    <label>测试任务<textarea name="agentPrompt" placeholder="让 Agent 完成的真实任务"></textarea></label>
++                    <label>输出必须包含<input name="agentContains" placeholder="关键词1,关键词2" /></label>
++                    <label>输出禁止包含<input name="agentNotContains" placeholder="错误信息,敏感内容" /></label>
++                    <label>必须调用 Tools<input name="agentRequiredTools" placeholder="read,grep" /></label>
++                    <label>禁止调用 Tools<input name="agentForbiddenTools" placeholder="write,bash" /></label>
++                    <label>最大延迟 ms<input name="agentMaxLatency" type="number" min="1" /></label>
++                  </div>
++                </div>
++                <div class="eval-case-panel" data-eval-panel="semantic_judge" hidden>
++                  <div class="form-grid">
++                    <label>评分 Rubric<textarea name="judgeRubric" placeholder="明确列出正确性、完整性、安全性的评分锚点"></textarea></label>
++                    <label>Rubric 版本<input name="judgeRubricVersion" placeholder="support-answer-v1" /></label>
++                    <label>最低得分（0-1）<input name="judgeMinScore" type="number" min="0" max="1" step="0.01" value="0.8" /></label>
++                    <label>最低置信度（0-1）<input name="judgeMinConfidence" type="number" min="0" max="1" step="0.01" value="0.7" /></label>
++                    <label>Judge 证据 JSON<textarea name="judgeEvidence" placeholder='{"verdict":"pass","score":0.9,"confidence":0.85,"rubricVersion":"support-answer-v1","judgeSnapshot":{"provider":"openai","model":"model-id","promptHash":"sha256..."}}'></textarea></label>
++                  </div>
++                </div>
+                 <div class="form-actions"><button class="primary-btn" type="submit">保存用例</button><button class="mini-btn" id="resetEvalCaseBtn" type="button">清空</button></div>
+               </form>
+             </div>
+           </div>
+           </section>
++          <section class="module-panel" data-module-panel="evaluation:datasets" hidden>
++            <div class="table-card">
++              <div class="history-head"><h2>数据集版本</h2><span class="muted">用例变化自动生成不可变快照</span></div>
++              <div id="evalDatasetGovernance"></div>
++              <div id="evalDatasetDiff" class="muted">选择“比较最近版本”查看新增、删除和修改。</div>
++            </div>
++            <div class="table-card" style="margin-top:12px">
++              <h2>Evaluation Profile</h2>
++              <form class="compact-form" id="evalProfileForm">
++                <label>名称<input name="name" required placeholder="核心 Agent Profile" /></label>
++                <label>Agent<select name="agentId" id="evalProfileAgent"></select></label>
++                <label>目标<input name="objectives" placeholder="准确,安全,低延迟" /></label>
++                <label>红线标签<input name="redLines" placeholder="security,critical" /></label>
++                <label>必过标签<input name="requiredTags" placeholder="core,safety" /></label>
++                <button class="mini-btn" type="submit">创建 Profile</button>
++              </form>
++              <div id="evalProfileList"></div>
++            </div>
++          </section>
+           <section class="module-panel trend-section eval-trends" data-module-panel="evaluation:trends" hidden>
+             <div class="trend-section-head"><h2>质量趋势</h2><span>最近 10 次评测运行</span></div>
+             <div class="trend-grid" id="evalTrends"></div>
+           </section>
++          <section class="module-panel" data-module-panel="evaluation:reports" hidden>
++            <div class="table-card">
++              <h2>报告与人工复核</h2>
++              <div id="evalReportCenter"></div>
++            </div>
++          </section>
+           <section class="module-panel eval-history" data-module-panel="evaluation:history" hidden>
+             <div class="table-card">
+               <h2>运行历史</h2>
+               <div class="eval-run-list" id="evalRunList"></div>
+             </div>
+             <div class="table-card">
+-              <div class="history-head"><h2>运行详情</h2><button class="mini-btn" id="setEvalBaselineBtn" type="button" disabled>设为基线</button></div>
++              <div class="history-head"><h2>运行详情</h2><div class="form-actions"><a class="mini-btn" id="downloadEvalReportBtn" href="#" target="_blank" hidden>导出 Markdown</a><button class="mini-btn" id="setEvalBaselineBtn" type="button" disabled>设为基线</button></div></div>
+               <div id="evalRunDetail" class="muted">运行一次评测后查看断言与回归对比。</div>
+             </div>
+           </section>
++          <section class="module-panel" data-module-panel="evaluation:audit" hidden>
++            <div class="table-card">
++              <div class="history-head"><h2>评测治理审计</h2><span class="muted" id="evalAuditIntegrity">记录用例、数据集、Profile、门禁、基线与复核变更</span></div>
++              <div class="eval-result-list" id="evalAuditLog"></div>
++            </div>
++          </section>
+         </div>
+       </section>
+     </main>
+@@ -2500,6 +2562,7 @@
+       currentTree: null,
+       observeFilter: "all",
+       evalCasePage: 1,
++      observeRunOffset: 0,
+       moduleTabs: { observability: "overview", evaluation: "cases" },
+       user: null,
+     };
+@@ -2620,14 +2683,19 @@
+       renderObservability();
+     }
+ 
+-    async function searchObservabilityRuns() {
++    async function searchObservabilityRuns(offset = 0) {
+       const params = new URLSearchParams();
+       const query = $("#observeRunSearch").value.trim();
+       const status = $("#observeRunStatus").value;
+       if (query) params.set("q", query);
+       if (status) params.set("status", status);
++      params.set("limit", "50");
++      params.set("offset", String(Math.max(0, offset)));
+       const result = await api(`/api/observability/runs?${params}`);
+       app.observability.runs = result.runs || [];
++      app.observability.events = result.events || [];
++      app.observability.pagination = result.pagination;
++      app.observeRunOffset = result.pagination?.offset || 0;
+       app.selected.run = app.observability.runs[0]?.id || null;
+       renderObservability();
+     }
+@@ -2935,7 +3003,7 @@
+     }
+ 
+     function evalCategoryLabel(category) {
+-      return { policy: "Tool 策略", structured_output: "结构化输出", assertion: "通用断言", trajectory: "调用轨迹" }[category] || category;
++      return { policy: "Tool 策略", structured_output: "结构化输出", assertion: "通用断言", trajectory: "调用轨迹", agent_task: "Agent 任务", semantic_judge: "语义裁判" }[category] || category;
+     }
+ 
+     function syncEvalCasePanels() {
+@@ -2955,6 +3023,17 @@
+       form.elements.assertions.value = "[]";
+       form.elements.actualTools.value = "[]";
+       form.elements.trajectoryExpected.value = "{}";
++      form.elements.agentPrompt.value = "";
++      form.elements.agentContains.value = "";
++      form.elements.agentNotContains.value = "";
++      form.elements.agentRequiredTools.value = "";
++      form.elements.agentForbiddenTools.value = "";
++      form.elements.agentMaxLatency.value = "";
++      form.elements.judgeRubric.value = "";
++      form.elements.judgeRubricVersion.value = "";
++      form.elements.judgeMinScore.value = "0.8";
++      form.elements.judgeMinConfidence.value = "0.7";
++      form.elements.judgeEvidence.value = "{}";
+       form.elements.weight.value = "1";
+       form.elements.severity.value = "medium";
+       if (app.evaluation?.datasets?.length) form.elements.datasetId.value = $("#evalDatasetFilter").value || app.evaluation.datasets[0].id;
+@@ -2994,6 +3073,19 @@
+       } else if (item.category === "trajectory") {
+         form.elements.actualTools.value = JSON.stringify(item.actualTools ?? [], null, 2);
+         form.elements.trajectoryExpected.value = JSON.stringify(item.expected ?? {}, null, 2);
++      } else if (item.category === "agent_task") {
++        form.elements.agentPrompt.value = item.prompt || "";
++        form.elements.agentContains.value = (item.expected?.contains || []).join(",");
++        form.elements.agentNotContains.value = (item.expected?.notContains || []).join(",");
++        form.elements.agentRequiredTools.value = (item.expected?.requiredTools || []).join(",");
++        form.elements.agentForbiddenTools.value = (item.expected?.forbiddenTools || []).join(",");
++        form.elements.agentMaxLatency.value = item.expected?.maxLatencyMs || "";
++      } else if (item.category === "semantic_judge") {
++        form.elements.judgeRubric.value = item.rubric || "";
++        form.elements.judgeRubricVersion.value = item.rubricVersion || "";
++        form.elements.judgeMinScore.value = item.expected?.minScore ?? 0.8;
++        form.elements.judgeMinConfidence.value = item.expected?.minConfidence ?? 0.7;
++        form.elements.judgeEvidence.value = JSON.stringify(item.evidence ?? {}, null, 2);
+       }
+       $("#evalCaseEditorTitle").textContent = "编辑评测用例";
+       syncEvalCasePanels();
+@@ -3055,6 +3147,40 @@
+           throw new Error("实际 Tool 轨迹和期望轨迹必须是合法 JSON");
+         }
+       }
++      if (values.category === "agent_task") {
++        return {
++          ...common,
++          prompt: String(values.agentPrompt || "").trim(),
++          evidence: { output: "", status: "pending", tools: [], latencyMs: 0 },
++          expected: {
++            status: "succeeded",
++            contains: normalizeTags(values.agentContains),
++            notContains: normalizeTags(values.agentNotContains),
++            requiredTools: normalizeTags(values.agentRequiredTools),
++            forbiddenTools: normalizeTags(values.agentForbiddenTools),
++            ...(Number(values.agentMaxLatency) > 0 ? { maxLatencyMs: Number(values.agentMaxLatency) } : {}),
++          },
++        };
++      }
++      if (values.category === "semantic_judge") {
++        let evidence;
++        try {
++          evidence = JSON.parse(String(values.judgeEvidence || "{}"));
++        } catch {
++          throw new Error("Judge 证据必须是合法 JSON");
++        }
++        return {
++          ...common,
++          rubric: String(values.judgeRubric || "").trim(),
++          rubricVersion: String(values.judgeRubricVersion || "").trim(),
++          evidence,
++          expected: {
++            minScore: Number(values.judgeMinScore ?? 0.8),
++            minConfidence: Number(values.judgeMinConfidence ?? 0.7),
++            allowedVerdicts: ["pass"],
++          },
++        };
++      }
+       return {
+         ...common,
+         output: String(values.structuredOutput || ""),
+@@ -3068,12 +3194,16 @@
+       const baselineButton = $("#setEvalBaselineBtn");
+       if (!run) {
+         baselineButton.disabled = true;
++        $("#downloadEvalReportBtn").hidden = true;
+         detail.innerHTML = `<span class="muted">运行一次评测后查看断言与回归对比。</span>`;
+         return;
+       }
+       const isBaseline = run.id === app.evaluation.baselineRunId;
+-      baselineButton.disabled = isBaseline;
+-      baselineButton.textContent = isBaseline ? "当前基线" : "设为基线";
++      const releaseDecision = (run.releaseDecision || run.gate)?.decision;
++      baselineButton.disabled = isBaseline || releaseDecision !== "approved";
++      $("#downloadEvalReportBtn").hidden = false;
++      $("#downloadEvalReportBtn").href = `/api/evals/runs/${encodeURIComponent(run.id)}/report.md`;
++      baselineButton.textContent = isBaseline ? "当前基线" : releaseDecision === "approved" ? "设为基线" : "仅 approved 可设基线";
+       const names = new Map((run.caseSnapshot || []).map((item) => [item.id, item.name]));
+       const comparison = run.comparison;
+       detail.innerHTML = `
+@@ -3084,7 +3214,8 @@
+           ${stat("耗时", formatMs(run.durationMs))}
+         </div>
+         ${comparison ? `<p class="muted">对比基线：通过率 ${comparison.passRateDelta >= 0 ? "+" : ""}${Math.round(comparison.passRateDelta * 100)} 个百分点 · 回归 ${comparison.regressions.length} · 改善 ${comparison.improvements.length}</p>` : `<p class="muted">当前运行尚无基线对比。</p>`}
+-        <p class="muted">发布门禁：${run.gate?.passed !== false ? "通过" : `未通过 · ${(run.gate?.reasons || []).map(escapeHtml).join("；")}`}</p>
++        ${run.statistics ? `<p class="muted">Trial ${run.statistics.passedTrials}/${run.statistics.totalTrials} · 通过率 ${Math.round(run.statistics.trialPassRate * 100)}%${run.statistics.confidenceInterval ? ` · 95% Wilson CI ${Math.round(run.statistics.confidenceInterval.lower * 100)}%–${Math.round(run.statistics.confidenceInterval.upper * 100)}%` : ""}</p>` : ""}
++        <p class="muted">发布门禁：${escapeHtml((run.releaseDecision || run.gate)?.decision || "unknown")}${((run.releaseDecision || run.gate)?.reasons || []).length ? ` · ${((run.releaseDecision || run.gate)?.reasons || []).map(escapeHtml).join("；")}` : ""}</p>
+         <div class="eval-result-list">
+           ${(run.results || []).map((result) => `
+             <div class="eval-result ${result.passed ? "" : "failed"}">
+@@ -3106,11 +3237,49 @@
+       if (datasets.some((item) => item.id === selectedDataset)) $("#evalDatasetFilter").value = selectedDataset;
+       const gate = data.gate || { minPassRate: 1, maxRegressions: 0 };
+       $("#evalGateForm").elements.minPassRate.value = Math.round(gate.minPassRate * 100);
++      $("#evalGateForm").elements.minWeightedPassRate.value = Math.round((gate.minWeightedPassRate ?? gate.minPassRate) * 100);
+       $("#evalGateForm").elements.maxRegressions.value = gate.maxRegressions;
++      $("#evalGateForm").elements.minTrialsPerCase.value = gate.minTrialsPerCase ?? 1;
++      $("#evalGateForm").elements.minConfidenceLowerBound.value = Math.round((gate.minConfidenceLowerBound ?? 0) * 100);
++      $("#evalGateForm").elements.blockCritical.checked = gate.blockCritical !== false;
++      $("#evalGateForm").elements.requirePublishedDataset.checked = gate.requirePublishedDataset !== false;
++      $("#evalProfileAgent").innerHTML = (app.state?.agents || []).map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join("");
++      $("#evalDatasetGovernance").innerHTML = datasets.map((dataset) => `
++        <div class="eval-result">
++          <b>${escapeHtml(dataset.name)} · v${dataset.version}</b>
++          <p>${escapeHtml(dataset.suite || "regression")} · ${escapeHtml(dataset.status || "draft")} · Owner ${escapeHtml(dataset.owner || "未设置")} · 已发布 v${dataset.publishedVersion ?? "-"}</p>
++          <p>${dataset.versions?.length || 0} 个版本 · 最新更新 ${formatTime(dataset.updatedAt)}</p>
++          <button class="mini-btn" type="button" data-diff-eval-dataset="${dataset.id}">比较最近版本</button>
++          ${dataset.status !== "published" ? `<button class="mini-btn" type="button" data-eval-dataset-status="published" data-eval-dataset-id="${dataset.id}">发布</button>` : ""}
++          ${dataset.status !== "retired" ? `<button class="mini-btn" type="button" data-eval-dataset-status="retired" data-eval-dataset-id="${dataset.id}">退役</button>` : ""}
++        </div>`).join("") || `<p class="muted">暂无数据集。</p>`;
++      $("#evalProfileList").innerHTML = (data.profiles || []).map((profile) => `
++        <div class="eval-result"><b>${escapeHtml(profile.name)} · v${profile.version}</b><p>Agent ${escapeHtml(profile.agentId)} · 必过标签 ${(profile.requiredTags || []).map(escapeHtml).join("、") || "无"}</p></div>
++      `).join("") || `<p class="muted">暂无 Evaluation Profile。</p>`;
++      const runNames = new Map((data.runs || []).map((run) => [run.id, run.name]));
++      $("#evalReportCenter").innerHTML = `
++        ${(data.runs || []).slice(0, 10).map((run) => `<div class="eval-result ${(run.releaseDecision || run.gate)?.decision === "blocked" ? "failed" : ""}"><b>${escapeHtml(run.name)} · ${escapeHtml((run.releaseDecision || run.gate)?.decision || "unknown")}</b><p>通过率 ${Math.round(run.summary.passRate * 100)}% · 加权 ${Math.round((run.summary.weightedPassRate || 0) * 100)}% · <a href="/api/evals/runs/${encodeURIComponent(run.id)}/report.md" target="_blank">Markdown 报告</a></p></div>`).join("") || `<p class="muted">暂无报告。</p>`}
++        <h3>待人工复核</h3>
++        ${(data.reviews || []).filter((review) => review.status === "pending").map((review) => `<div class="eval-result failed"><b>${escapeHtml(runNames.get(review.runId) || review.runId)} · ${escapeHtml(review.caseId)}</b><p><button class="mini-btn" type="button" data-review-id="${review.id}" data-review-status="approved">批准</button> <button class="mini-btn" type="button" data-review-id="${review.id}" data-review-status="false_positive">误报</button> <button class="danger-btn" type="button" data-review-id="${review.id}" data-review-status="rejected">拒绝</button></p></div>`).join("") || `<p class="muted">暂无待复核项。</p>`}
++      `;
+       const latestJob = (data.jobs || [])[0];
+       $("#evalJobStatus").innerHTML = latestJob
+-        ? `${escapeHtml(latestJob.name)} · ${escapeHtml(latestJob.status)}${latestJob.error ? ` · ${escapeHtml(latestJob.error)}` : ""}${["queued", "running"].includes(latestJob.status) ? ` <button class="mini-btn" type="button" data-cancel-eval-job="${latestJob.id}">取消</button>` : ""}`
++        ? `${escapeHtml(latestJob.name)} · ${escapeHtml(latestJob.status)} · ${Number(latestJob.progress?.percent || 0)}% · ${escapeHtml(latestJob.progress?.phase || "")}${latestJob.error ? ` · ${escapeHtml(latestJob.error)}` : ""}${["queued", "running"].includes(latestJob.status) ? ` <button class="mini-btn" type="button" data-cancel-eval-job="${latestJob.id}">取消</button>` : ""}`
+         : "暂无运行中的评测任务。";
++      const auditLabels = {
++        "case.created": "创建用例", "case.updated": "更新用例", "case.deleted": "删除用例",
++        "dataset.created": "创建数据集", "dataset.lifecycle_updated": "更新数据集生命周期", "profile.created": "创建 Profile", "profile.updated": "更新 Profile",
++        "gate.updated": "更新发布门禁", "baseline.selected": "设置评测基线", "review.decided": "完成人工复核",
++      };
++      const auditIntegrity = data.auditIntegrity || { valid: true, checked: 0, legacy: 0, errors: [] };
++      $("#evalAuditIntegrity").textContent = auditIntegrity.valid
++        ? `完整性校验通过 · ${auditIntegrity.checked} 条受保护${auditIntegrity.legacy ? ` · ${auditIntegrity.legacy} 条历史记录` : ""}`
++        : `完整性校验失败 · ${auditIntegrity.errors?.length || 0} 个异常`;
++      $("#evalAuditLog").innerHTML = (data.auditLog || []).slice(0, 200).map((item) => `
++        <div class="eval-result">
++          <b>${escapeHtml(auditLabels[item.action] || item.action)} · ${escapeHtml(item.entityType)} / ${escapeHtml(item.entityId)}</b>
++          <p>操作者 ${escapeHtml(item.actorId)} · ${formatTime(item.createdAt)}${item.afterHash ? ` · 版本 ${escapeHtml(item.afterHash.slice(0, 12))}` : ""}</p>
++        </div>`).join("") || `<p class="muted">暂无治理变更记录。</p>`;
+       $("#evalCount").textContent = summary.totalCases || 0;
+       $("#evalStats").innerHTML = [
+         stat("全部用例", summary.totalCases || 0),
+@@ -3156,7 +3325,7 @@
+       $("#evalRunList").innerHTML = runs.map((run) => `
+         <button class="eval-run-item ${run.id === app.selected.evalRun ? "active" : ""}" data-select-eval-run="${run.id}" type="button">
+           <b>${escapeHtml(run.name)}${run.id === data.baselineRunId ? " · 基线" : ""}</b>
+-          <span>${Math.round(run.summary.passRate * 100)}% 通过 · ${run.summary.failed} 失败 · 门禁${run.gate?.passed !== false ? "通过" : "失败"} · ${formatTime(run.startedAt)}</span>
++          <span>${Math.round(run.summary.passRate * 100)}% 通过 · ${run.summary.failed} 失败 · 门禁${(run.releaseDecision || run.gate)?.passed !== false ? "通过" : "失败"} · ${formatTime(run.startedAt)}</span>
+         </button>`).join("") || `<div class="muted">暂无运行历史。</div>`;
+       renderEvalRunDetail(runs.find((item) => item.id === app.selected.evalRun));
+     }
+@@ -3168,13 +3337,13 @@
+       try {
+         const job = await api("/api/evals/jobs", {
+           method: "POST",
+-          body: JSON.stringify({ caseIds: [...evalSelectedCases], datasetId: $("#evalDatasetFilter").value }),
++          body: JSON.stringify({ caseIds: [...evalSelectedCases], datasetId: $("#evalDatasetFilter").value, trialCount: Number($("#evalTrialCount").value || 1) }),
+         });
+         $("#evalJobStatus").textContent = `${job.name} · queued`;
+         for (let attempt = 0; attempt < 80; attempt += 1) {
+           await new Promise((resolve) => setTimeout(resolve, 250));
+           const current = await api(`/api/evals/jobs/${job.id}`);
+-          $("#evalJobStatus").textContent = `${current.name} · ${current.status}${current.error ? ` · ${current.error}` : ""}`;
++          $("#evalJobStatus").textContent = `${current.name} · ${current.status} · ${current.progress?.percent ?? 0}% · ${current.progress?.phase || ""}${current.error ? ` · ${current.error}` : ""}`;
+           if (current.status === "completed") {
+             app.selected.evalRun = current.runId;
+             await loadEvaluation();
+@@ -3191,6 +3360,37 @@
+       }
+     }
+ 
++    async function runAgentEvaluation() {
++      const button = $("#runAgentEvalBtn");
++      button.disabled = true;
++      button.textContent = "Agent 执行中";
++      try {
++        const job = await api("/api/evals/agent-runner", {
++          method: "POST",
++          body: JSON.stringify({ caseIds: [...evalSelectedCases], datasetId: $("#evalDatasetFilter").value, trialCount: Number($("#evalTrialCount").value || 1) }),
++        });
++        $("#evalJobStatus").textContent = `${job.name} · queued`;
++        for (let attempt = 0; attempt < 900; attempt += 1) {
++          await new Promise((resolve) => setTimeout(resolve, 1_000));
++          const current = await api(`/api/evals/jobs/${job.id}`);
++          $("#evalJobStatus").textContent = `${current.name} · ${current.status} · ${current.progress?.percent ?? 0}% · ${current.progress?.phase || ""}${current.error ? ` · ${current.error}` : ""}`;
++          if (current.status === "completed") {
++            app.selected.evalRun = current.runId;
++            await loadEvaluation();
++            setModuleTab("evaluation", "history");
++            return;
++          }
++          if (["failed", "canceled"].includes(current.status)) throw new Error(current.error || "Agent Runner 任务未完成");
++        }
++        throw new Error("Agent Runner 等待超时，任务仍会在后台继续执行");
++      } catch (error) {
++        alert(`Agent Runner 失败：${error.message}`);
++      } finally {
++        button.disabled = false;
++        button.textContent = "执行 Agent Runner";
++      }
++    }
++
+     async function deleteEvalCase(id) {
+       const item = app.evaluation?.cases?.find((entry) => entry.id === id);
+       if (!item || !confirm(`确认删除评测用例“${item.name}”？`)) return;
+@@ -3223,7 +3423,7 @@
+       ].join("");
+       const activeAlerts = (data.alerts || []).filter((item) => item.status === "active");
+       $("#observeAlerts").innerHTML = activeAlerts.map((item) => `
+-        <div class="alert-item"><span><b>${escapeHtml(item.ruleName)}</b> · ${escapeHtml(item.message)}</span><button class="mini-btn" type="button" data-ack-alert="${item.id}">确认</button></div>
++        <div class="alert-item"><span><b>${escapeHtml(item.ruleName)}</b> · ${badge(escapeHtml(item.severity || "warning"))} · ${escapeHtml(item.message)}</span><button class="mini-btn" type="button" data-ack-alert="${item.id}">确认</button></div>
+       `).join("");
+       $("#observeSkillRows").innerHTML = (data.skillStats || []).map((item) => `
+         <tr><td>${escapeHtml(item.label || item.name)}</td><td>${badge(item.status)}</td><td>${item.calls}</td><td>${item.failed}</td><td>${formatMs(item.avgMs)}</td></tr>
+@@ -3244,6 +3444,7 @@
+               ${run.modelUsage ? `<span>Token ${Number(run.modelUsage.totalTokens || 0).toLocaleString()}</span><span>$${Number(run.modelUsage.costUsd || 0).toFixed(4)}</span><span>TTFT ${formatMs(run.modelUsage.ttftMs)}</span>` : ""}
+               <span>Trace ${escapeHtml(String(run.traceId || run.id).slice(0, 8))}</span>
+               ${["failed", "canceled", "timed_out"].includes(run.status) && run.retryable ? `<button class="mini-btn" type="button" data-retry-run="${run.id}">重试</button>` : ""}
++              <button class="mini-btn" type="button" data-import-eval-run="${run.id}">加入评测</button>
+             </span>
+           </div>
+           <div class="run-flow">
+@@ -3251,6 +3452,15 @@
+           </div>
+         </div>
+       `).join("") || `<div class="muted">暂无运行记录。发送一条任务后会在这里出现 Trace。</div>`;
++      const pagination = data.pagination || { total: runs.length, limit: runs.length || 1, offset: 0, hasMore: false };
++      const pageStart = pagination.total ? pagination.offset + 1 : 0;
++      const pageEnd = Math.min(pagination.total, pagination.offset + runs.length);
++      $("#observeRunPagination").innerHTML = `
++        <span class="eval-page-status">${pageStart}-${pageEnd} / ${pagination.total} 条</span>
++        <div class="eval-page-actions">
++          <button class="mini-btn" type="button" data-observe-page="previous" ${pagination.offset <= 0 ? "disabled" : ""}>上一页</button>
++          <button class="mini-btn" type="button" data-observe-page="next" ${pagination.hasMore ? "" : "disabled"}>下一页</button>
++        </div>`;
+       renderTimeline();
+       renderToolTrace();
+     }
+@@ -4406,6 +4616,21 @@
+         await sendTask(target.dataset.retryRun);
+         return;
+       }
++      if (target?.dataset.importEvalRun) {
++        event.preventDefault();
++        event.stopPropagation();
++        try {
++          await api(`/api/evals/import-run/${target.dataset.importEvalRun}`, {
++            method: "POST",
++            body: JSON.stringify({ datasetId: app.evaluation?.datasets?.[0]?.id || "dataset_default" }),
++          });
++          await loadEvaluation();
++          switchView("evaluation");
++        } catch (error) {
++          alert(`加入评测失败：${error.message}`);
++        }
++        return;
++      }
+       if (target?.dataset.moduleTab) {
+         const [moduleName, tabName] = target.dataset.moduleTab.split(":");
+         setModuleTab(moduleName, tabName);
+@@ -4445,6 +4670,21 @@
+         await api(`/api/evals/jobs/${target.dataset.cancelEvalJob}/cancel`, { method: "POST" });
+         await loadEvaluation();
+       }
++      if (target?.dataset.diffEvalDataset) {
++        const diff = await api(`/api/evals/datasets/${target.dataset.diffEvalDataset}/diff`);
++        $("#evalDatasetDiff").innerHTML = `<div class="eval-result"><b>v${diff.fromVersion} → v${diff.toVersion}</b><p>新增 ${diff.added.length} · 删除 ${diff.removed.length} · 修改 ${diff.changed.length} · 不变 ${diff.unchanged.length}</p></div>`;
++      }
++      if (target?.dataset.evalDatasetStatus && target?.dataset.evalDatasetId) {
++        await api(`/api/evals/datasets/${target.dataset.evalDatasetId}/lifecycle`, {
++          method: "PUT",
++          body: JSON.stringify({ status: target.dataset.evalDatasetStatus }),
++        });
++        await loadEvaluation();
++      }
++      if (target?.dataset.reviewId) {
++        await api(`/api/evals/reviews/${target.dataset.reviewId}`, { method: "PUT", body: JSON.stringify({ status: target.dataset.reviewStatus }) });
++        await loadEvaluation();
++      }
+       if (target?.dataset.selectEvalRun) {
+         app.selected.evalRun = target.dataset.selectEvalRun;
+         renderEvaluation();
+@@ -4463,6 +4703,13 @@
+         document.querySelectorAll(".observe-filter").forEach((btn) => btn.classList.toggle("active", btn.dataset.observeFilter === app.observeFilter));
+         renderTimeline();
+       }
++      if (target?.dataset.observePage) {
++        const pagination = app.observability?.pagination || { limit: 50, offset: 0 };
++        const nextOffset = target.dataset.observePage === "next"
++          ? pagination.offset + pagination.limit
++          : Math.max(0, pagination.offset - pagination.limit);
++        await searchObservabilityRuns(nextOffset);
++      }
+     });
+ 
+     document.addEventListener("keydown", async (event) => {
+@@ -4651,6 +4898,7 @@
+     });
+     $("#resetObserveRunSearch").addEventListener("click", () => {
+       $("#observeRunSearchForm").reset();
++      app.observeRunOffset = 0;
+       loadObservability().catch(console.error);
+     });
+ 
+@@ -4679,7 +4927,7 @@
+       const name = input.value.trim();
+       if (!name) return input.focus();
+       try {
+-        const dataset = await api("/api/evals/datasets", { method: "POST", body: JSON.stringify({ name }) });
++        const dataset = await api("/api/evals/datasets", { method: "POST", body: JSON.stringify({ name, suite: $("#newEvalDatasetSuite").value }) });
+         input.value = "";
+         await loadEvaluation();
+         $("#evalDatasetFilter").value = dataset.id;
+@@ -4695,14 +4943,29 @@
+       try {
+         await api("/api/evals/gate", {
+           method: "PUT",
+-          body: JSON.stringify({ minPassRate: Number(values.minPassRate) / 100, maxRegressions: Number(values.maxRegressions) }),
++          body: JSON.stringify({ minPassRate: Number(values.minPassRate) / 100, minWeightedPassRate: Number(values.minWeightedPassRate) / 100, maxRegressions: Number(values.maxRegressions), minTrialsPerCase: Number(values.minTrialsPerCase), minConfidenceLowerBound: Number(values.minConfidenceLowerBound) / 100, blockCritical: event.currentTarget.elements.blockCritical.checked, requirePublishedDataset: event.currentTarget.elements.requirePublishedDataset.checked }),
+         });
+         await loadEvaluation();
+       } catch (error) {
+         alert(`保存发布门禁失败：${error.message}`);
+       }
+     });
++    $("#evalProfileForm").addEventListener("submit", async (event) => {
++      event.preventDefault();
++      const values = formData(event.currentTarget);
++      try {
++        await api("/api/evals/profiles", {
++          method: "POST",
++          body: JSON.stringify({ name: values.name, agentId: values.agentId, objectives: normalizeTags(values.objectives), redLines: normalizeTags(values.redLines), requiredTags: normalizeTags(values.requiredTags), metrics: {}, reviewRules: [] }),
++        });
++        event.currentTarget.reset();
++        await loadEvaluation();
++      } catch (error) {
++        alert(`创建 Profile 失败：${error.message}`);
++      }
++    });
+     $("#runEvalBtn").addEventListener("click", runEvaluation);
++    $("#runAgentEvalBtn").addEventListener("click", runAgentEvaluation);
+     $("#evalCaseRows").addEventListener("change", (event) => {
+       const checkbox = event.target.closest("[data-eval-select]");
+       if (!checkbox) return;
+diff --git a/src/auth-users.ts b/src/auth-users.ts
+index 9e707c2..121c134 100644
+--- a/src/auth-users.ts
++++ b/src/auth-users.ts
+@@ -353,6 +353,15 @@ export class UserRegistry {
+     );
+   }
+ 
++  /** 返回不含凭据的用户列表，供后台任务恢复等服务端流程使用。 */
++  list(): AuthUser[] {
++    return [...this.users.values()].map(({ id, username, displayName }) => ({
++      id,
++      username,
++      displayName,
++    }));
++  }
++
+   /**
+    * 统一验证密码。
+    * 注册用户优先走安全的 scrypt 哈希校验；只有内置演示账号才回退到明文兼容逻辑。
+diff --git a/src/config.ts b/src/config.ts
+index b4dfffa..c3e1179 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -11,6 +11,15 @@ function positiveInteger(
+     return parsed;
+ }
+ 
++function nonNegativeNumber(value: string | undefined, fallback: number, name: string) {
++    const parsed = Number(value ?? fallback);
++    if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} 必须是非负数字`);
++    return parsed;
++}
++
++const DEFAULT_AUTH_SECRET = "new-agent-course-auth-secret-change-in-production";
++const DEFAULT_MYSQL_PASSWORD = "b2535abbc080c621a129f55ac81ba09e";
++
+ export const runtimeConfig = {
+     // 服务端口，如果没有配置 PORT 默认使用 3100
+     port: positiveInteger(process.env.PORT, 3100, "PORT"),
+@@ -39,6 +48,52 @@ export const runtimeConfig = {
+         "APPROVAL_TIMEOUT_MS",
+     ),
+ 
++    // 进程异常退出后，超过该时长仍未结束的观测 Run 会被恢复任务标记为失败。
++    observabilityStaleRunMs: positiveInteger(
++        process.env.OBSERVABILITY_STALE_RUN_MS,
++        30 * 60 * 1000,
++        "OBSERVABILITY_STALE_RUN_MS",
++    ),
++    observabilityAlertDurationMs: positiveInteger(
++        process.env.OBSERVABILITY_ALERT_DURATION_MS,
++        120_000,
++        "OBSERVABILITY_ALERT_DURATION_MS",
++    ),
++    // 设为 0 可关闭单次运行成本告警。
++    observabilityAlertCostUsd: nonNegativeNumber(
++        process.env.OBSERVABILITY_ALERT_COST_USD,
++        1,
++        "OBSERVABILITY_ALERT_COST_USD",
++    ),
++
++    // 评测资源预算，防止单次运行或证据快照无限膨胀。
++    evalMaxCasesPerRun: positiveInteger(
++        process.env.EVAL_MAX_CASES_PER_RUN,
++        200,
++        "EVAL_MAX_CASES_PER_RUN",
++    ),
++    evalMaxStoredCases: positiveInteger(
++        process.env.EVAL_MAX_STORED_CASES,
++        2_000,
++        "EVAL_MAX_STORED_CASES",
++    ),
++    evalMaxOutputChars: positiveInteger(
++        process.env.EVAL_MAX_OUTPUT_CHARS,
++        200_000,
++        "EVAL_MAX_OUTPUT_CHARS",
++    ),
++    // 限制非确定性评测的重复执行次数，避免一次请求意外放大模型成本。
++    evalMaxTrialsPerCase: positiveInteger(
++        process.env.EVAL_MAX_TRIALS_PER_CASE,
++        20,
++        "EVAL_MAX_TRIALS_PER_CASE",
++    ),
++    evalMaxEvidenceBytes: positiveInteger(
++        process.env.EVAL_MAX_EVIDENCE_BYTES,
++        16 * 1024 * 1024,
++        "EVAL_MAX_EVIDENCE_BYTES",
++    ),
++
+     // mysql 配置
+     storage: process.env.NEW_AGENT_STORAGE?.toLowerCase() === "file"
+         ? "file"
+@@ -49,7 +104,7 @@ export const runtimeConfig = {
+         port: positiveInteger(process.env.MYSQL_PORT, 3306, "MYSQL_PORT"),
+         database: process.env.MYSQL_DATABASE || "new_agent",
+         user: process.env.MYSQL_USER || "root",
+-        password: process.env.MYSQL_PASSWORD || "b2535abbc080c621a129f55ac81ba09e",
++        password: process.env.MYSQL_PASSWORD || DEFAULT_MYSQL_PASSWORD,
+         connectionLimit: positiveInteger(
+             process.env.MYSQL_CONNECTION_LIMIT,
+             10,
+@@ -64,8 +119,7 @@ export const runtimeConfig = {
+ 
+     // 登录 cookie 的签名秘钥
+     authSecret:
+-        process.env.AUTH_SECRET || 
+-        "new-agent-course-auth-secret-change-in-production",
++        process.env.AUTH_SECRET || DEFAULT_AUTH_SECRET,
+ 
+     authCookieSecure:
+         process.env.AUTH_COOKIE_SECURE?.toLocaleLowerCase() === "true",
+@@ -77,3 +131,18 @@ export const runtimeConfig = {
+         "AUTH_MAX_AGE_SECONDS",
+     ),
+ } as const;
++
++// Fail closed in production instead of silently starting with development credentials
++// or a single-process file store that cannot provide multi-instance consistency.
++if (process.env.NODE_ENV === "production") {
++    const violations: string[] = [];
++    if (runtimeConfig.storage !== "mysql") violations.push("NEW_AGENT_STORAGE 必须为 mysql");
++    if (!process.env.MYSQL_PASSWORD || runtimeConfig.mysql.password === DEFAULT_MYSQL_PASSWORD) {
++        violations.push("必须显式配置非默认 MYSQL_PASSWORD");
++    }
++    if (!process.env.AUTH_SECRET || runtimeConfig.authSecret === DEFAULT_AUTH_SECRET || runtimeConfig.authSecret.length < 32) {
++        violations.push("必须配置至少 32 字符的非默认 AUTH_SECRET");
++    }
++    if (!runtimeConfig.authCookieSecure) violations.push("AUTH_COOKIE_SECURE 必须为 true");
++    if (violations.length) throw new Error(`生产配置不安全：${violations.join("；")}`);
++}
+diff --git a/src/document-store.ts b/src/document-store.ts
+new file mode 100644
+index 0000000..1920ee4
+--- /dev/null
++++ b/src/document-store.ts
+@@ -0,0 +1,102 @@
++import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
++import { dirname, join } from "node:path";
++import {
++  compareAndSwapDocument,
++  readDocument,
++  readVersionedDocument,
++  usesMysqlStorage,
++  writeDocument,
++} from "./storage/mysql.ts";
++
++const dataDir = process.env.NEW_AGENT_DATA_DIR || join(process.cwd(), "data");
++const queues = new Map<string, Promise<void>>();
++
++function safePart(value: string): string {
++  return encodeURIComponent(value).replaceAll("%", "_");
++}
++
++function filePath(ownerId: string, name: string): string {
++  return join(dataDir, "documents", safePart(ownerId), `${safePart(name)}.json`);
++}
++
++function mysqlKey(ownerId: string, name: string): string {
++  return `${name}:${ownerId}`;
++}
++
++export async function readOwnerDocument<T>(
++  ownerId: string,
++  name: string,
++): Promise<T | null> {
++  if (usesMysqlStorage()) return readDocument<T>(mysqlKey(ownerId, name));
++  try {
++    return JSON.parse(await readFile(filePath(ownerId, name), "utf-8")) as T;
++  } catch (error: any) {
++    if (error?.code === "ENOENT") return null;
++    throw error;
++  }
++}
++
++export async function writeOwnerDocument(
++  ownerId: string,
++  name: string,
++  value: unknown,
++): Promise<void> {
++  const queueKey = `${ownerId}:${name}`;
++  const previous = queues.get(queueKey) ?? Promise.resolve();
++  const current = previous.catch(() => undefined).then(async () => {
++    if (usesMysqlStorage()) {
++      await writeDocument(mysqlKey(ownerId, name), value);
++      return;
++    }
++    const target = filePath(ownerId, name);
++    const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
++    await mkdir(dirname(target), { recursive: true });
++    try {
++      await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
++        encoding: "utf-8",
++        mode: 0o600,
++      });
++      await rename(temporary, target);
++    } catch (error) {
++      await rm(temporary, { force: true }).catch(() => undefined);
++      throw error;
++    }
++  });
++  queues.set(queueKey, current);
++  await current.finally(() => {
++    if (queues.get(queueKey) === current) queues.delete(queueKey);
++  });
++}
++
++/** 跨进程安全的 read-modify-write；MySQL 冲突时重新读取并重放 mutation。 */
++export async function mutateOwnerDocument<T, R>(
++  ownerId: string,
++  name: string,
++  initial: () => T,
++  mutation: (value: T) => R | Promise<R>,
++): Promise<R> {
++  if (!usesMysqlStorage()) {
++    const queueKey = `mutation:${ownerId}:${name}`;
++    const previous = queues.get(queueKey) ?? Promise.resolve();
++    let result!: R;
++    const current = previous.catch(() => undefined).then(async () => {
++      const value = await readOwnerDocument<T>(ownerId, name) ?? initial();
++      result = await mutation(value);
++      await writeOwnerDocument(ownerId, name, value);
++    });
++    queues.set(queueKey, current);
++    await current.finally(() => {
++      if (queues.get(queueKey) === current) queues.delete(queueKey);
++    });
++    return result;
++  }
++
++  const key = mysqlKey(ownerId, name);
++  for (let attempt = 0; attempt < 8; attempt += 1) {
++    const stored = await readVersionedDocument<T>(key);
++    const value = stored?.value ?? initial();
++    const result = await mutation(value);
++    if (await compareAndSwapDocument(key, value, stored?.version ?? 0)) return result;
++  }
++  throw new Error(`并发更新冲突：${name}，请稍后重试`);
++}
+diff --git a/src/evals/eval-center.ts b/src/evals/eval-center.ts
+new file mode 100644
+index 0000000..182895c
+--- /dev/null
++++ b/src/evals/eval-center.ts
+@@ -0,0 +1,836 @@
++import { createHash, randomUUID } from "node:crypto";
++import { runtimeConfig } from "../config.ts";
++import { mutateOwnerDocument, readOwnerDocument } from "../document-store.ts";
++import { evaluateCase, validateEvalCase, type EvalCase, type EvalResult } from "./evaluator.ts";
++import { wilsonInterval, type ConfidenceInterval } from "./statistics.ts";
++
++export type EvalSuite = "capability" | "regression" | "canary" | "shadow" | "adversarial";
++export type DatasetStatus = "draft" | "published" | "retired";
++export type EvalDataset = {
++  id: string;
++  name: string;
++  suite: EvalSuite;
++  status: DatasetStatus;
++  owner: string;
++  version: number;
++  versions: DatasetVersion[];
++  publishedVersion?: number;
++  publishedAt?: string;
++  retiredAt?: string;
++  createdAt: string;
++  updatedAt: string;
++};
++export type DatasetVersion = { version: number; hash: string; caseIds: string[]; cases: EvalCase[]; createdAt: string };
++export type EvalProfile = { id: string; agentId: string; name: string; version: number; objectives: string[]; metrics: Record<string, number>; redLines: string[]; requiredTags: string[]; reviewRules: string[]; createdAt: string; updatedAt: string };
++export type ReleaseGate = {
++  minPassRate: number;
++  minWeightedPassRate: number;
++  maxRegressions: number;
++  blockCritical: boolean;
++  requirePublishedDataset: boolean;
++  minTrialsPerCase: number;
++  minConfidenceLowerBound: number;
++};
++export type ReleaseDecision = "approved" | "review_required" | "inconclusive" | "blocked";
++export type EvalReview = { id: string; runId: string; caseId: string; status: "pending" | "approved" | "rejected" | "false_positive" | "resolved"; note?: string; createdAt: string; updatedAt: string; decidedBy?: string };
++export type EvalAuditEvent = {
++  id: string;
++  action: string;
++  actorId: string;
++  entityType: "case" | "dataset" | "profile" | "gate" | "baseline" | "review";
++  entityId: string;
++  beforeHash?: string;
++  afterHash?: string;
++  metadata?: Record<string, unknown>;
++  createdAt: string;
++  /** Hash chain fields are optional only for records created before this schema existed. */
++  previousHash?: string;
++  eventHash?: string;
++};
++
++export type EvalAuditIntegrity = {
++  valid: boolean;
++  checked: number;
++  legacy: number;
++  errors: Array<{ id: string; reason: "hash_mismatch" | "chain_broken" }>;
++};
++export type EvalJob = {
++  id: string;
++  name: string;
++  status: "queued" | "running" | "completed" | "failed" | "canceled";
++  payload?: RunEvalOptions;
++  attempts?: number;
++  leaseId?: string;
++  leaseExpiresAt?: string;
++  cancelRequested?: boolean;
++  runId?: string;
++  error?: string;
++  progress?: { completed: number; total: number; percent: number; phase: string; currentCaseId?: string; updatedAt: string };
++  createdAt: string;
++  updatedAt: string;
++};
++
++export type EvalRun = {
++  id: string; jobId?: string; name: string; startedAt: string; finishedAt: string; durationMs: number;
++  datasetId?: string; datasetVersion?: number; datasetHash: string;
++  profileSnapshot?: EvalProfile; targetSnapshot: Record<string, unknown>; caseSnapshot: EvalCase[];
++  evidenceSnapshot?: Record<string, unknown>;
++  results: EvalResult[];
++  trials: Array<{ caseId: string; trial: number; result: EvalResult }>;
++  statistics: {
++    requestedTrialsPerCase: number;
++    totalTrials: number;
++    passedTrials: number;
++    trialPassRate: number;
++    confidenceInterval?: ConfidenceInterval;
++    cases: Array<{
++      caseId: string;
++      trials: number;
++      passedTrials: number;
++      successRate: number;
++      passAtK: boolean;
++      passPowerK: boolean;
++      confidenceInterval?: ConfidenceInterval;
++    }>;
++  };
++  summary: { total: number; passed: number; failed: number; passRate: number; weightedPassRate: number };
++  categories: Array<{ category: string; total: number; passed: number; passRate: number }>;
++  comparison?: { baselineRunId: string; passRateDelta: number; regressions: string[]; improvements: string[] };
++  gate: { passed: boolean; decision: ReleaseDecision; reasons: string[] };
++  releaseDecision?: { passed: boolean; decision: ReleaseDecision; reasons: string[]; updatedAt: string };
++  reportSnapshot: { failedCaseIds: string[]; regressions: string[]; improvements: string[]; checklist: string[] };
++};
++
++export type EvalState = {
++  cases: EvalCase[]; datasets: EvalDataset[]; profiles: EvalProfile[]; runs: EvalRun[];
++  reviews: EvalReview[]; jobs: EvalJob[]; gate: ReleaseGate; baselineRunId?: string;
++  baselineRunIds?: Record<string, string>;
++  runnerLease?: { id: string; expiresAt: string };
++  auditLog: EvalAuditEvent[];
++};
++
++const now = () => new Date().toISOString();
++const clone = <T>(value: T): T => structuredClone(value);
++
++function initialState(): EvalState {
++  const createdAt = now();
++  return {
++    cases: [],
++    datasets: [{ id: "dataset_default", name: "默认回归集", suite: "regression", status: "published", owner: "system", version: 0, versions: [], publishedAt: createdAt, createdAt, updatedAt: createdAt }],
++    profiles: [], runs: [], reviews: [], jobs: [], auditLog: [],
++    gate: { minPassRate: 1, minWeightedPassRate: 1, maxRegressions: 0, blockCritical: true, requirePublishedDataset: true, minTrialsPerCase: 1, minConfidenceLowerBound: 0 },
++  };
++}
++
++function normalizeState(value?: Partial<EvalState> | null): EvalState {
++  const base = initialState();
++  return {
++    ...base,
++    ...value,
++    cases: Array.isArray(value?.cases) ? value.cases : [],
++    datasets: Array.isArray(value?.datasets) && value.datasets.length
++      ? value.datasets.map((dataset) => ({
++        ...dataset,
++        suite: dataset.suite ?? "regression",
++        status: dataset.status ?? "draft",
++        owner: dataset.owner ?? "",
++      }))
++      : base.datasets,
++    profiles: Array.isArray(value?.profiles) ? value.profiles : [],
++    runs: Array.isArray(value?.runs) ? value.runs : [],
++    reviews: Array.isArray(value?.reviews) ? value.reviews : [],
++    jobs: Array.isArray(value?.jobs) ? value.jobs : [],
++    auditLog: Array.isArray(value?.auditLog) ? value.auditLog : [],
++    gate: { ...base.gate, ...(value?.gate ?? {}) },
++  };
++}
++
++export async function readEvalState(ownerId: string): Promise<EvalState> {
++  return normalizeState(await readOwnerDocument<EvalState>(ownerId, "evaluations"));
++}
++
++function mutate<T>(ownerId: string, action: (state: EvalState) => T | Promise<T>): Promise<T> {
++  return mutateOwnerDocument(ownerId, "evaluations", initialState, async (state) => {
++    Object.assign(state, normalizeState(state));
++    const result = await action(state);
++    const baselineIds = new Set(Object.values(state.baselineRunIds ?? {}));
++    if (state.baselineRunId) baselineIds.add(state.baselineRunId);
++    state.runs = state.runs.filter((run, index) => index < 200 || baselineIds.has(run.id));
++    const retainedRunIds = new Set(state.runs.map((run) => run.id));
++    state.reviews = state.reviews.filter((review) => retainedRunIds.has(review.runId)).slice(0, 2_000);
++    const activeJobs = state.jobs.filter((job) => job.status === "queued" || job.status === "running");
++    const terminalJobs = state.jobs.filter((job) => job.status !== "queued" && job.status !== "running").slice(0, 100);
++    state.jobs = [...activeJobs, ...terminalJobs];
++    state.auditLog = state.auditLog.slice(0, 5_000);
++    return result;
++  });
++}
++
++function hash(value: unknown): string {
++  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
++}
++
++function audit(
++  state: EvalState,
++  action: string,
++  actorId: string | undefined,
++  entityType: EvalAuditEvent["entityType"],
++  entityId: string,
++  before?: unknown,
++  after?: unknown,
++  metadata?: Record<string, unknown>,
++): void {
++  const event: Omit<EvalAuditEvent, "eventHash"> = {
++    id: `audit_${randomUUID()}`,
++    action,
++    actorId: actorId || "system",
++    entityType,
++    entityId,
++    beforeHash: before === undefined ? undefined : hash(before),
++    afterHash: after === undefined ? undefined : hash(after),
++    metadata,
++    createdAt: now(),
++    previousHash: state.auditLog[0]?.eventHash,
++  };
++  state.auditLog.unshift({ ...event, eventHash: hash(event) });
++}
++
++/** Verify both event contents and ordering. The oldest retained hash is treated as the chain anchor. */
++export function verifyEvalAuditEvents(events: EvalAuditEvent[]): EvalAuditIntegrity {
++  const chronological = [...events].reverse();
++  const errors: EvalAuditIntegrity["errors"] = [];
++  let checked = 0;
++  let legacy = 0;
++  let expectedPrevious = chronological[0]?.previousHash;
++  for (const event of chronological) {
++    if (!event.eventHash) {
++      legacy += 1;
++      expectedPrevious = undefined;
++      continue;
++    }
++    checked += 1;
++    if (event.previousHash !== expectedPrevious) {
++      errors.push({ id: event.id, reason: "chain_broken" });
++    }
++    const { eventHash, ...body } = event;
++    if (hash(body) !== eventHash) {
++      errors.push({ id: event.id, reason: "hash_mismatch" });
++    }
++    expectedPrevious = eventHash;
++  }
++  return { valid: errors.length === 0, checked, legacy, errors };
++}
++
++function snapshotDataset(state: EvalState, datasetId: string): DatasetVersion {
++  const dataset = state.datasets.find((item) => item.id === datasetId);
++  if (!dataset) throw new Error("评测数据集不存在");
++  const cases = clone(state.cases.filter((item) => item.datasetId === datasetId));
++  const digest = hash(cases);
++  const latest = dataset.versions.at(-1);
++  if (latest?.hash === digest) return latest;
++  const version = { version: dataset.version + 1, hash: digest, caseIds: cases.map((item) => item.id), cases, createdAt: now() };
++  dataset.version = version.version;
++  dataset.updatedAt = version.createdAt;
++  dataset.versions.push(version);
++  dataset.versions = dataset.versions.slice(-50);
++  return version;
++}
++
++function markDatasetDirty(state: EvalState, datasetId: string): void {
++  const dataset = state.datasets.find((item) => item.id === datasetId);
++  if (dataset?.status === "published") {
++    dataset.status = "draft";
++    dataset.updatedAt = now();
++  }
++}
++
++export async function getEvalDashboard(ownerId: string) {
++  const state = await readEvalState(ownerId);
++  const latest = state.runs[0];
++  return {
++    ...state,
++    auditLog: state.auditLog.slice(0, 200),
++    auditTotal: state.auditLog.length,
++    auditIntegrity: verifyEvalAuditEvents(state.auditLog),
++    summary: { totalCases: state.cases.length, enabledCases: state.cases.filter((item) => item.enabled).length, totalRuns: state.runs.length, latestPassRate: latest?.summary.passRate ?? 0 },
++  };
++}
++
++export async function verifyEvalAudit(ownerId: string): Promise<EvalAuditIntegrity> {
++  return verifyEvalAuditEvents((await readEvalState(ownerId)).auditLog);
++}
++
++export async function getEvalAudit(
++  ownerId: string,
++  filters: { action?: string; entityType?: string; limit?: number; offset?: number } = {},
++) {
++  const state = await readEvalState(ownerId);
++  const items = state.auditLog.filter((item) =>
++    (!filters.action || item.action === filters.action) &&
++    (!filters.entityType || item.entityType === filters.entityType)
++  );
++  const requestedLimit = Number(filters.limit ?? 100);
++  const requestedOffset = Number(filters.offset ?? 0);
++  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, Math.floor(requestedLimit))) : 100;
++  const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
++  const auditLog = items.slice(offset, offset + limit);
++  return { auditLog, pagination: { total: items.length, limit, offset, hasMore: offset + auditLog.length < items.length } };
++}
++
++export async function createEvalCase(ownerId: string, payload: Partial<EvalCase>, actorId?: string): Promise<EvalCase> {
++  const errors = validateEvalCase(payload);
++  if (errors.length) throw new Error(errors.join("；"));
++  return mutate(ownerId, (state) => {
++    if (state.cases.length >= runtimeConfig.evalMaxStoredCases) {
++      throw new Error(`评测用例已达到 ${runtimeConfig.evalMaxStoredCases} 条上限`);
++    }
++    if (!state.datasets.some((item) => item.id === payload.datasetId)) throw new Error("评测数据集不存在");
++    const timestamp = now();
++    const item = { ...payload, id: `case_${randomUUID()}`, description: String(payload.description ?? ""), tags: Array.isArray(payload.tags) ? payload.tags.map(String) : [], severity: payload.severity ?? "medium", weight: Number(payload.weight ?? 1), owner: String(payload.owner ?? ""), enabled: payload.enabled !== false, createdAt: timestamp, updatedAt: timestamp } as EvalCase;
++    state.cases.unshift(item);
++    snapshotDataset(state, item.datasetId);
++    markDatasetDirty(state, item.datasetId);
++    audit(state, "case.created", actorId, "case", item.id, undefined, item, { datasetId: item.datasetId });
++    return clone(item);
++  });
++}
++
++export async function updateEvalCase(ownerId: string, caseId: string, payload: Partial<EvalCase>, actorId?: string): Promise<EvalCase | null> {
++  return mutate(ownerId, (state) => {
++    const item = state.cases.find((entry) => entry.id === caseId);
++    if (!item) return null;
++    const before = clone(item);
++    const next = { ...item, ...payload, id: item.id, createdAt: item.createdAt, updatedAt: now() } as EvalCase;
++    const errors = validateEvalCase(next);
++    if (errors.length) throw new Error(errors.join("；"));
++    if (!state.datasets.some((dataset) => dataset.id === next.datasetId)) throw new Error("评测数据集不存在");
++    Object.assign(item, next);
++    if (before.datasetId !== item.datasetId) {
++      snapshotDataset(state, before.datasetId);
++      markDatasetDirty(state, before.datasetId);
++    }
++    snapshotDataset(state, item.datasetId);
++    markDatasetDirty(state, item.datasetId);
++    audit(state, "case.updated", actorId, "case", item.id, before, item, { datasetId: item.datasetId });
++    return clone(item);
++  });
++}
++
++export async function deleteEvalCase(ownerId: string, caseId: string, actorId?: string): Promise<boolean> {
++  return mutate(ownerId, (state) => {
++    const index = state.cases.findIndex((item) => item.id === caseId);
++    if (index < 0) return false;
++    const [removed] = state.cases.splice(index, 1);
++    snapshotDataset(state, removed.datasetId);
++    markDatasetDirty(state, removed.datasetId);
++    audit(state, "case.deleted", actorId, "case", removed.id, removed, undefined, { datasetId: removed.datasetId });
++    return true;
++  });
++}
++
++export async function createDataset(
++  ownerId: string,
++  payload: string | { name?: string; suite?: EvalSuite; owner?: string },
++  actorId?: string,
++): Promise<EvalDataset> {
++  const name = typeof payload === "string" ? payload : String(payload.name ?? "");
++  const suite = typeof payload === "string" ? "regression" : (payload.suite ?? "regression");
++  const datasetOwner = typeof payload === "string" ? actorId ?? ownerId : String(payload.owner ?? actorId ?? ownerId);
++  if (!name.trim()) throw new Error("数据集名称不能为空");
++  if (!["capability", "regression", "canary", "shadow", "adversarial"].includes(suite)) throw new Error("数据集 Suite 无效");
++  return mutate(ownerId, (state) => {
++    const timestamp = now();
++    const item: EvalDataset = {
++      id: `dataset_${randomUUID()}`,
++      name: name.trim(),
++      suite,
++      status: "draft",
++      owner: datasetOwner.trim(),
++      version: 0,
++      versions: [],
++      createdAt: timestamp,
++      updatedAt: timestamp,
++    };
++    state.datasets.unshift(item);
++    audit(state, "dataset.created", actorId, "dataset", item.id, undefined, item);
++    return clone(item);
++  });
++}
++
++export async function updateDatasetLifecycle(
++  ownerId: string,
++  datasetId: string,
++  patch: { status?: DatasetStatus; suite?: EvalSuite; owner?: string },
++  actorId?: string,
++): Promise<EvalDataset | null> {
++  if (patch.status && !["draft", "published", "retired"].includes(patch.status)) throw new Error("数据集状态无效");
++  if (patch.suite && !["capability", "regression", "canary", "shadow", "adversarial"].includes(patch.suite)) throw new Error("数据集 Suite 无效");
++  return mutate(ownerId, (state) => {
++    const dataset = state.datasets.find((item) => item.id === datasetId);
++    if (!dataset) return null;
++    const before = clone(dataset);
++    const timestamp = now();
++    if (patch.suite) dataset.suite = patch.suite;
++    if (patch.owner !== undefined) dataset.owner = patch.owner.trim();
++    if (patch.status && patch.status !== dataset.status) {
++      if (patch.status === "published") {
++        const version = snapshotDataset(state, dataset.id);
++        if (!version.caseIds.length) throw new Error("空数据集不能发布");
++        dataset.publishedAt = timestamp;
++        dataset.publishedVersion = version.version;
++        dataset.retiredAt = undefined;
++      } else if (patch.status === "retired") {
++        dataset.retiredAt = timestamp;
++      } else {
++        dataset.retiredAt = undefined;
++      }
++      dataset.status = patch.status;
++    }
++    dataset.updatedAt = timestamp;
++    audit(state, "dataset.lifecycle_updated", actorId, "dataset", dataset.id, before, dataset, { status: dataset.status, suite: dataset.suite });
++    return clone(dataset);
++  });
++}
++
++export async function diffDataset(ownerId: string, datasetId: string) {
++  const state = await readEvalState(ownerId);
++  const dataset = state.datasets.find((item) => item.id === datasetId);
++  if (!dataset) return null;
++  const [before, after] = dataset.versions.slice(-2);
++  if (!after) return { fromVersion: 0, toVersion: before?.version ?? 0, added: before?.caseIds ?? [], removed: [], changed: [], unchanged: [] };
++  const oldMap = new Map(before.cases.map((item) => [item.id, item]));
++  const newMap = new Map(after.cases.map((item) => [item.id, item]));
++  const added = [...newMap.keys()].filter((id) => !oldMap.has(id));
++  const removed = [...oldMap.keys()].filter((id) => !newMap.has(id));
++  const shared = [...newMap.keys()].filter((id) => oldMap.has(id));
++  const changed = shared.filter((id) => hash(oldMap.get(id)) !== hash(newMap.get(id)));
++  return { fromVersion: before.version, toVersion: after.version, added, removed, changed, unchanged: shared.filter((id) => !changed.includes(id)) };
++}
++
++export async function saveProfile(ownerId: string, payload: Partial<EvalProfile>, profileId?: string, actorId?: string): Promise<EvalProfile> {
++  if (!String(payload.name ?? "").trim()) throw new Error("Profile 名称不能为空");
++  if (!String(payload.agentId ?? "").trim()) throw new Error("Profile 必须绑定 Agent");
++  if (String(payload.name).length > 120) throw new Error("Profile 名称不能超过 120 字符");
++  for (const [metric, weight] of Object.entries(payload.metrics ?? {})) {
++    if (!metric.trim() || !Number.isFinite(Number(weight)) || Number(weight) < 0) throw new Error("Profile 指标权重必须是非负数字");
++  }
++  return mutate(ownerId, (state) => {
++    const existing = profileId ? state.profiles.find((item) => item.id === profileId) : undefined;
++    const timestamp = now();
++    if (existing) {
++      const before = clone(existing);
++      Object.assign(existing, payload, { id: existing.id, version: existing.version + 1, createdAt: existing.createdAt, updatedAt: timestamp });
++      audit(state, "profile.updated", actorId, "profile", existing.id, before, existing);
++      return clone(existing);
++    }
++    const item: EvalProfile = { id: `profile_${randomUUID()}`, agentId: String(payload.agentId ?? ""), name: String(payload.name ?? "默认 Profile"), version: 1, objectives: payload.objectives ?? [], metrics: payload.metrics ?? {}, redLines: payload.redLines ?? [], requiredTags: payload.requiredTags ?? [], reviewRules: payload.reviewRules ?? [], createdAt: timestamp, updatedAt: timestamp };
++    state.profiles.unshift(item);
++    audit(state, "profile.created", actorId, "profile", item.id, undefined, item);
++    return clone(item);
++  });
++}
++
++export async function updateGate(ownerId: string, patch: Partial<ReleaseGate>, actorId?: string): Promise<ReleaseGate> {
++  for (const [name, value] of [["minPassRate", patch.minPassRate], ["minWeightedPassRate", patch.minWeightedPassRate], ["maxRegressions", patch.maxRegressions], ["minTrialsPerCase", patch.minTrialsPerCase], ["minConfidenceLowerBound", patch.minConfidenceLowerBound]] as const) {
++    if (value !== undefined && !Number.isFinite(Number(value))) throw new Error(`${name} 必须是有效数字`);
++  }
++  return mutate(ownerId, (state) => {
++    const before = clone(state.gate);
++    state.gate = {
++      ...state.gate,
++      ...patch,
++      minPassRate: Math.min(1, Math.max(0, Number(patch.minPassRate ?? state.gate.minPassRate))),
++      minWeightedPassRate: Math.min(1, Math.max(0, Number(patch.minWeightedPassRate ?? state.gate.minWeightedPassRate))),
++      maxRegressions: Math.max(0, Math.floor(Number(patch.maxRegressions ?? state.gate.maxRegressions))),
++      minTrialsPerCase: Math.min(runtimeConfig.evalMaxTrialsPerCase, Math.max(1, Math.floor(Number(patch.minTrialsPerCase ?? state.gate.minTrialsPerCase)))),
++      minConfidenceLowerBound: Math.min(1, Math.max(0, Number(patch.minConfidenceLowerBound ?? state.gate.minConfidenceLowerBound))),
++    };
++    audit(state, "gate.updated", actorId, "gate", "release_gate", before, state.gate);
++    return clone(state.gate);
++  });
++}
++
++export type RunEvalOptions = {
++  caseIds?: string[];
++  datasetId?: string;
++  profileId?: string;
++  targetSnapshot?: Record<string, unknown>;
++  evidenceByCase?: Record<string, unknown | unknown[]>;
++  trialCount?: number;
++  name?: string;
++  runner?: boolean;
++  agentId?: string;
++  jobId?: string;
++};
++
++export async function runEvaluation(ownerId: string, options: RunEvalOptions = {}): Promise<EvalRun> {
++  return mutate(ownerId, (state) => {
++    const existing = options.jobId ? state.runs.find((item) => item.jobId === options.jobId) : undefined;
++    if (existing) return clone(existing);
++    const started = Date.now();
++    const selected = state.cases.filter((item) => item.enabled && (!options.datasetId || item.datasetId === options.datasetId) && (!options.caseIds?.length || options.caseIds.includes(item.id)));
++    if (!selected.length) throw new Error("没有可运行的评测用例");
++    if (selected.length > runtimeConfig.evalMaxCasesPerRun) {
++      throw new Error(`单次评测最多运行 ${runtimeConfig.evalMaxCasesPerRun} 条用例`);
++    }
++    const requestedTrialsPerCase = Number(options.trialCount ?? 1);
++    if (!Number.isInteger(requestedTrialsPerCase) || requestedTrialsPerCase <= 0 || requestedTrialsPerCase > runtimeConfig.evalMaxTrialsPerCase) {
++      throw new Error(`trialCount 必须是 1–${runtimeConfig.evalMaxTrialsPerCase} 的整数`);
++    }
++    if (options.evidenceByCase && Buffer.byteLength(JSON.stringify(options.evidenceByCase), "utf8") > runtimeConfig.evalMaxEvidenceBytes) {
++      throw new Error(`评测证据快照不能超过 ${runtimeConfig.evalMaxEvidenceBytes} 字节`);
++    }
++    const datasetForRun = options.datasetId ? state.datasets.find((item) => item.id === options.datasetId) : undefined;
++    const datasetVersion = options.datasetId ? snapshotDataset(state, options.datasetId) : undefined;
++    const trials: EvalRun["trials"] = [];
++    const caseStatistics: EvalRun["statistics"]["cases"] = [];
++    const results = selected.map((item) => {
++      const suppliedEvidence = options.evidenceByCase?.[item.id];
++      const trialEvidence = Array.isArray(suppliedEvidence)
++        ? suppliedEvidence.slice(0, requestedTrialsPerCase)
++        : suppliedEvidence === undefined
++          ? Array.from({ length: requestedTrialsPerCase }, () => undefined)
++          : [suppliedEvidence];
++      const caseTrials = (trialEvidence.length ? trialEvidence : [undefined]).map((evidence, index) => {
++        const evaluated = evaluateCase(evidence === undefined ? item : { ...item, evidence });
++        trials.push({ caseId: item.id, trial: index + 1, result: evaluated });
++        return evaluated;
++      });
++      const passedTrials = caseTrials.filter((trial) => trial.passed).length;
++      const passAtK = passedTrials > 0;
++      const passPowerK = passedTrials === caseTrials.length;
++      caseStatistics.push({
++        caseId: item.id,
++        trials: caseTrials.length,
++        passedTrials,
++        successRate: passedTrials / caseTrials.length,
++        passAtK,
++        passPowerK,
++        confidenceInterval: wilsonInterval(passedTrials, caseTrials.length),
++      });
++      const first = caseTrials[0];
++      return {
++        ...first,
++        passed: passPowerK,
++        durationMs: caseTrials.reduce((sum, trial) => sum + trial.durationMs, 0),
++        assertions: caseTrials.length === 1 ? first.assertions : [
++          ...first.assertions,
++          { name: `稳定通过 pass^${caseTrials.length}`, passed: passPowerK, expected: caseTrials.length, actual: passedTrials },
++        ],
++      };
++    });
++    const profile = state.profiles.find((item) => item.id === options.profileId);
++    const passed = results.filter((item) => item.passed).length;
++    const effectiveWeight = (item: EvalCase) => item.weight * Number(profile?.metrics[item.category] ?? 1);
++    const totalWeight = selected.reduce((sum, item) => sum + effectiveWeight(item), 0);
++    const passedWeight = selected.reduce((sum, item, index) => sum + (results[index].passed ? effectiveWeight(item) : 0), 0);
++    const categories = [...new Set(selected.map((item) => item.category))].map((category) => {
++      const categoryResults = results.filter((item) => item.category === category);
++      const count = categoryResults.filter((item) => item.passed).length;
++      return { category, total: categoryResults.length, passed: count, passRate: count / categoryResults.length };
++    });
++    const baselineScope = [
++      options.datasetId ?? "selection",
++      options.profileId ?? "no-profile",
++      String(options.targetSnapshot?.agentId ?? "any-agent"),
++    ].join(":");
++    const scopedBaselineId = state.baselineRunIds?.[baselineScope];
++    const baseline = state.runs.find((item) => item.id === scopedBaselineId);
++    const previous = new Map(baseline?.results.map((item) => [item.id, item.passed]) ?? []);
++    const regressions = results.filter((item) => previous.get(item.id) === true && !item.passed).map((item) => item.id);
++    const improvements = results.filter((item) => previous.get(item.id) === false && item.passed).map((item) => item.id);
++    const passRate = passed / results.length;
++    const weightedPassRate = totalWeight ? passedWeight / totalWeight : 0;
++    const passedTrials = trials.filter((item) => item.result.passed).length;
++    const confidenceInterval = wilsonInterval(passedTrials, trials.length);
++    const critical = selected.filter((item, index) => item.severity === "critical" && !results[index].passed).map((item) => item.id);
++    const missingTags = (profile?.requiredTags ?? []).filter((tag) => selected.some((item, index) => item.tags.includes(tag) && !results[index].passed));
++    const redLineFailures = selected.filter((item, index) =>
++      !results[index].passed && item.tags.some((tag) => (profile?.redLines ?? []).includes(tag))
++    ).map((item) => item.id);
++    const reasons: string[] = [];
++    const inconclusiveReasons: string[] = [];
++    if (passRate < state.gate.minPassRate) reasons.push(`通过率 ${(passRate * 100).toFixed(1)}% 低于门禁 ${(state.gate.minPassRate * 100).toFixed(1)}%`);
++    if (weightedPassRate < state.gate.minWeightedPassRate) reasons.push("加权通过率未达标");
++    if (regressions.length > state.gate.maxRegressions) reasons.push(`回归数 ${regressions.length} 超过上限 ${state.gate.maxRegressions}`);
++    if (state.gate.blockCritical && critical.length) reasons.push(`存在 ${critical.length} 个 critical 失败`);
++    if (missingTags.length) reasons.push(`必过标签失败：${missingTags.join("、")}`);
++    if (redLineFailures.length) reasons.push(`Profile 红线失败：${redLineFailures.length} 项`);
++    if (state.gate.requirePublishedDataset && options.datasetId && datasetForRun?.status !== "published") {
++      inconclusiveReasons.push(`数据集尚未发布，当前状态为 ${datasetForRun?.status ?? "unknown"}`);
++    }
++    const underSampled = caseStatistics.filter((item) => item.trials < state.gate.minTrialsPerCase).map((item) => item.caseId);
++    if (underSampled.length) inconclusiveReasons.push(`${underSampled.length} 条用例的 Trial 数低于门禁 ${state.gate.minTrialsPerCase}`);
++    if (state.gate.minConfidenceLowerBound > 0 && (confidenceInterval?.lower ?? 0) < state.gate.minConfidenceLowerBound) {
++      reasons.push(`95% 置信区间下界 ${((confidenceInterval?.lower ?? 0) * 100).toFixed(1)}% 低于门禁 ${(state.gate.minConfidenceLowerBound * 100).toFixed(1)}%`);
++    }
++    const timestamp = now();
++    const failedIds = results.filter((item) => !item.passed).map((item) => item.id);
++    const reviewCaseIds = selected.filter((item, index) =>
++      !results[index].passed && (!(profile?.reviewRules.length) || item.tags.some((tag) => profile.reviewRules.includes(tag)))
++    ).map((item) => item.id);
++    const decision: EvalRun["gate"]["decision"] = reasons.length || (failedIds.length > 0 && reviewCaseIds.length === 0)
++      ? "blocked"
++      : inconclusiveReasons.length
++        ? "inconclusive"
++        : reviewCaseIds.length
++          ? "review_required"
++          : "approved";
++    const runId = `evalrun_${randomUUID()}`;
++    for (const caseId of reviewCaseIds) {
++      state.reviews.unshift({ id: `review_${randomUUID()}`, runId, caseId, status: "pending", createdAt: timestamp, updatedAt: timestamp });
++    }
++    const gateReasons = [...reasons, ...inconclusiveReasons];
++    const run: EvalRun = {
++      id: runId, jobId: options.jobId,
++      name: options.name ?? `评测运行 ${new Date().toLocaleString("zh-CN")}`,
++      startedAt: new Date(started).toISOString(), finishedAt: timestamp, durationMs: Date.now() - started,
++      datasetId: options.datasetId, datasetVersion: datasetVersion?.version,
++      datasetHash: datasetVersion?.hash ?? hash(selected), profileSnapshot: profile ? clone(profile) : undefined,
++      targetSnapshot: clone(options.targetSnapshot ?? {}), caseSnapshot: clone(selected),
++      evidenceSnapshot: options.evidenceByCase ? clone(options.evidenceByCase) : undefined,
++      results,
++      trials,
++      statistics: {
++        requestedTrialsPerCase,
++        totalTrials: trials.length,
++        passedTrials,
++        trialPassRate: trials.length ? passedTrials / trials.length : 0,
++        confidenceInterval,
++        cases: caseStatistics,
++      },
++      summary: { total: results.length, passed, failed: results.length - passed, passRate, weightedPassRate }, categories,
++      comparison: baseline ? { baselineRunId: baseline.id, passRateDelta: passRate - baseline.summary.passRate, regressions, improvements } : undefined,
++      gate: { passed: decision === "approved", decision, reasons: gateReasons },
++      releaseDecision: { passed: decision === "approved", decision, reasons: gateReasons, updatedAt: timestamp },
++      reportSnapshot: { failedCaseIds: failedIds, regressions, improvements, checklist: [decision === "approved" ? "发布门禁通过" : `发布门禁结论：${decision}`, critical.length ? "存在 critical 失败" : "无 critical 失败", failedIds.length ? "检查失败或待复核用例" : "无稳定性失败"] },
++    };
++    state.runs.unshift(run);
++    return clone(run);
++  });
++}
++
++export async function setBaseline(ownerId: string, runId: string, actorId?: string): Promise<boolean> {
++  return mutate(ownerId, (state) => {
++    const run = state.runs.find((item) => item.id === runId);
++    if (!run || (run.releaseDecision ?? run.gate).decision !== "approved") return false;
++    const scope = [
++      run.datasetId ?? "selection",
++      run.profileSnapshot?.id ?? "no-profile",
++      String(run.targetSnapshot.agentId ?? "any-agent"),
++    ].join(":");
++    state.baselineRunIds ??= {};
++    const before = state.baselineRunIds[scope];
++    state.baselineRunIds[scope] = runId;
++    state.baselineRunId = runId;
++    audit(state, "baseline.selected", actorId, "baseline", scope, before ? { runId: before } : undefined, { runId }, { runId, scope });
++    return true;
++  });
++}
++
++export async function saveReview(ownerId: string, reviewId: string, status: EvalReview["status"], note?: string, decidedBy?: string): Promise<EvalReview | null> {
++  if (!["pending", "approved", "rejected", "false_positive", "resolved"].includes(status)) {
++    throw new Error("人工复核状态无效");
++  }
++  if (note && note.length > 4_000) throw new Error("复核说明不能超过 4000 字符");
++  return mutate(ownerId, (state) => {
++    const review = state.reviews.find((item) => item.id === reviewId);
++    if (!review) return null;
++    const before = clone(review);
++    review.status = status; review.note = note; review.decidedBy = decidedBy; review.updatedAt = now();
++    audit(state, "review.decided", decidedBy, "review", review.id, before, review, { runId: review.runId, caseId: review.caseId, status });
++    const run = state.runs.find((item) => item.id === review.runId);
++    if (run) {
++      const reviews = state.reviews.filter((item) => item.runId === run.id);
++      if (reviews.some((item) => item.status === "rejected")) {
++        run.releaseDecision = { passed: false, decision: "blocked", reasons: [...new Set([...run.gate.reasons, "人工复核拒绝发布"])], updatedAt: now() };
++      } else if (
++        run.gate.reasons.length === 0 &&
++        reviews.length &&
++        reviews.every((item) => ["approved", "false_positive", "resolved"].includes(item.status)) &&
++        (run.releaseDecision?.decision ?? run.gate.decision) === "review_required"
++      ) {
++        run.releaseDecision = { passed: true, decision: "approved", reasons: [], updatedAt: now() };
++      }
++    }
++    return clone(review);
++  });
++}
++
++export async function createJob(ownerId: string, name = "评测任务", payload: RunEvalOptions = {}): Promise<EvalJob> {
++  if (!name.trim() || name.length > 120) throw new Error("任务名称长度须为 1–120 字符");
++  return mutate(ownerId, (state) => {
++    const pending = state.jobs.filter((job) => job.status === "queued" || job.status === "running").length;
++    if (pending >= 100) throw new Error("待执行评测任务过多，请稍后再试");
++    const timestamp = now();
++    const job: EvalJob = {
++      id: `job_${randomUUID()}`, name, status: "queued", payload: clone(payload), attempts: 0,
++      progress: { completed: 0, total: 0, percent: 0, phase: "queued", updatedAt: timestamp },
++      createdAt: timestamp, updatedAt: timestamp,
++    };
++    state.jobs.unshift(job); return clone(job);
++  });
++}
++
++export async function claimEvalJob(ownerId: string, leaseMs = 60_000): Promise<EvalJob | null> {
++  return mutate(ownerId, (state) => {
++    const currentTime = Date.now();
++    for (const item of state.jobs) {
++      if (item.cancelRequested && (item.status === "queued" || (item.status === "running" && new Date(item.leaseExpiresAt ?? 0).getTime() <= currentTime))) {
++        item.status = "canceled";
++        item.leaseId = undefined;
++        item.leaseExpiresAt = undefined;
++        item.updatedAt = now();
++      }
++    }
++    const job = state.jobs.find((item) =>
++      !item.cancelRequested && (item.status === "queued" ||
++      (item.status === "running" && new Date(item.leaseExpiresAt ?? 0).getTime() <= currentTime))
++    );
++    if (!job) return null;
++    job.status = "running";
++    job.attempts = Number(job.attempts ?? 0) + 1;
++    job.leaseId = `joblease_${randomUUID()}`;
++    job.leaseExpiresAt = new Date(currentTime + leaseMs).toISOString();
++    job.updatedAt = now();
++    job.progress = { ...(job.progress ?? { completed: 0, total: 0, percent: 0 }), phase: "running", updatedAt: job.updatedAt };
++    return clone(job);
++  });
++}
++
++export async function finishEvalJob(
++  ownerId: string,
++  jobId: string,
++  leaseId: string,
++  patch: Pick<EvalJob, "status" | "runId" | "error">,
++): Promise<EvalJob | null> {
++  return mutate(ownerId, (state) => {
++    const job = state.jobs.find((item) => item.id === jobId);
++    if (!job || job.leaseId !== leaseId) return null;
++    job.status = job.cancelRequested ? "canceled" : patch.status;
++    job.runId = job.cancelRequested ? undefined : patch.runId;
++    job.error = job.cancelRequested ? undefined : patch.error;
++    job.leaseId = undefined;
++    job.leaseExpiresAt = undefined;
++    job.updatedAt = now();
++    const completed = job.progress?.completed ?? 0;
++    const total = job.progress?.total ?? completed;
++    job.progress = {
++      completed: job.status === "completed" ? total : completed,
++      total,
++      percent: job.status === "completed" ? 100 : (job.progress?.percent ?? 0),
++      phase: job.status,
++      updatedAt: job.updatedAt,
++    };
++    return clone(job);
++  });
++}
++
++export async function renewEvalJobLease(
++  ownerId: string,
++  jobId: string,
++  leaseId: string,
++  leaseMs = 90_000,
++): Promise<boolean> {
++  return mutate(ownerId, (state) => {
++    const job = state.jobs.find((item) => item.id === jobId);
++    if (!job || job.status !== "running" || job.leaseId !== leaseId || job.cancelRequested) return false;
++    job.leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
++    job.updatedAt = now();
++    return true;
++  });
++}
++
++export async function updateEvalJobProgress(
++  ownerId: string,
++  jobId: string,
++  leaseId: string,
++  progress: { completed: number; total: number; phase: string; currentCaseId?: string },
++): Promise<boolean> {
++  return mutate(ownerId, (state) => {
++    const job = state.jobs.find((item) => item.id === jobId);
++    if (!job || job.status !== "running" || job.leaseId !== leaseId) return false;
++    const total = Math.max(0, Math.floor(progress.total));
++    const completed = Math.max(0, Math.min(total, Math.floor(progress.completed)));
++    const updatedAt = now();
++    job.progress = {
++      completed,
++      total,
++      percent: total ? Math.round(completed / total * 100) : 0,
++      phase: progress.phase.slice(0, 80),
++      currentCaseId: progress.currentCaseId,
++      updatedAt,
++    };
++    job.updatedAt = updatedAt;
++    return true;
++  });
++}
++
++export async function requestJobCancellation(ownerId: string, jobId: string): Promise<EvalJob | null> {
++  return mutate(ownerId, (state) => {
++    const job = state.jobs.find((item) => item.id === jobId);
++    if (!job) return null;
++    if (["completed", "failed", "canceled"].includes(job.status)) return clone(job);
++    job.cancelRequested = true;
++    if (job.status === "queued") job.status = "canceled";
++    job.updatedAt = now();
++    if (job.status === "canceled") {
++      job.progress = { ...(job.progress ?? { completed: 0, total: 0, percent: 0 }), phase: "canceled", updatedAt: job.updatedAt };
++    }
++    return clone(job);
++  });
++}
++
++export async function updateJob(ownerId: string, jobId: string, patch: Partial<EvalJob>): Promise<EvalJob | null> {
++  return mutate(ownerId, (state) => {
++    const job = state.jobs.find((item) => item.id === jobId);
++    if (!job) return null;
++    Object.assign(job, patch, { id: job.id, createdAt: job.createdAt, updatedAt: now() });
++    return clone(job);
++  });
++}
++
++export async function getJob(ownerId: string, jobId: string): Promise<EvalJob | null> {
++  const state = await readEvalState(ownerId);
++  return clone(state.jobs.find((item) => item.id === jobId) ?? null);
++}
++
++export async function acquireRunnerLease(ownerId: string, ttlMs = 60 * 60 * 1000): Promise<string | null> {
++  return mutate(ownerId, (state) => {
++    if (state.runnerLease && new Date(state.runnerLease.expiresAt).getTime() > Date.now()) return null;
++    const id = `lease_${randomUUID()}`;
++    state.runnerLease = { id, expiresAt: new Date(Date.now() + ttlMs).toISOString() };
++    return id;
++  });
++}
++
++export async function releaseRunnerLease(ownerId: string, leaseId: string): Promise<void> {
++  await mutate(ownerId, (state) => {
++    if (state.runnerLease?.id === leaseId) state.runnerLease = undefined;
++  });
++}
++
++export function renderRunReport(run: EvalRun): string {
++  const effective = run.releaseDecision ?? run.gate;
++  const statistics = run.statistics;
++  const interval = statistics?.confidenceInterval;
++  const lines = [
++    `# ${run.name}`,
++    "",
++    `- 开始时间：${run.startedAt}`,
++    `- 数据集版本：${run.datasetVersion ?? "临时选择"}`,
++    `- 稳定通过率（pass^k）：${(run.summary.passRate * 100).toFixed(1)}%`,
++    `- 加权通过率：${(run.summary.weightedPassRate * 100).toFixed(1)}%`,
++    ...(statistics ? [`- Trial：${statistics.passedTrials}/${statistics.totalTrials} 通过`, `- Trial 通过率：${(statistics.trialPassRate * 100).toFixed(1)}%`] : []),
++    ...(interval ? [`- 95% Wilson 置信区间：${(interval.lower * 100).toFixed(1)}%–${(interval.upper * 100).toFixed(1)}%`] : []),
++    `- 原始门禁决策：${run.gate.decision}`,
++    `- 当前发布决策：${effective.decision}`,
++    "",
++    "## 结果",
++    "",
++  ];
++  const names = new Map(run.caseSnapshot.map((item) => [item.id, item.name]));
++  for (const item of run.results) lines.push(`- ${item.passed ? "✅" : "❌"} ${names.get(item.id) ?? item.id}`);
++  if (run.gate.reasons.length) lines.push("", "## 门禁原因", "", ...run.gate.reasons.map((reason) => `- ${reason}`));
++  return `${lines.join("\n")}\n`;
++}
+diff --git a/src/evals/evaluator.ts b/src/evals/evaluator.ts
+new file mode 100644
+index 0000000..8243331
+--- /dev/null
++++ b/src/evals/evaluator.ts
+@@ -0,0 +1,209 @@
++import { evaluateToolCall } from "../policy/tool-policy.ts";
++
++export type EvalCategory = "policy" | "structured_output" | "assertion" | "trajectory" | "agent_task" | "semantic_judge";
++export type Severity = "low" | "medium" | "high" | "critical";
++
++export type AssertionSpec = {
++  name: string;
++  operator: "equals" | "contains" | "not_contains" | "matches" | "exists" | "gt" | "gte" | "lt" | "lte";
++  path?: string;
++  expected?: unknown;
++};
++
++export type EvalCase = {
++  id: string;
++  name: string;
++  description: string;
++  category: EvalCategory;
++  tags: string[];
++  datasetId: string;
++  severity: Severity;
++  weight: number;
++  owner: string;
++  enabled: boolean;
++  createdAt: string;
++  updatedAt: string;
++  [key: string]: unknown;
++};
++
++export type AssertionResult = {
++  name: string;
++  passed: boolean;
++  expected: unknown;
++  actual: unknown;
++  message?: string;
++};
++
++export type EvalResult = {
++  id: string;
++  category: EvalCategory;
++  passed: boolean;
++  assertions: AssertionResult[];
++  durationMs: number;
++};
++
++function readPath(value: unknown, path?: string): unknown {
++  if (!path) return value;
++  return path.split(".").filter(Boolean).reduce<unknown>((current, part) => {
++    if (current === null || typeof current !== "object") return undefined;
++    return (current as Record<string, unknown>)[part];
++  }, value);
++}
++
++function contains(actual: unknown, expected: unknown): boolean {
++  if (typeof actual === "string") return actual.includes(String(expected ?? ""));
++  if (Array.isArray(actual)) return actual.some((item) => Object.is(item, expected));
++  return JSON.stringify(actual).includes(JSON.stringify(expected));
++}
++
++function safeRegularExpression(pattern: string): RegExp {
++  if (pattern.length > 256) throw new Error("正则表达式超过 256 字符");
++  // 拒绝最常见的嵌套量词灾难回溯形式，例如 (a+)+、(.*)*。
++  if (/\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) throw new Error("正则表达式包含高风险嵌套量词");
++  return new RegExp(pattern);
++}
++
++export function evaluateAssertion(actualRoot: unknown, spec: AssertionSpec): AssertionResult {
++  const actual = readPath(actualRoot, spec.path);
++  let passed = false;
++  try {
++    switch (spec.operator) {
++      case "equals": passed = JSON.stringify(actual) === JSON.stringify(spec.expected); break;
++      case "contains": passed = contains(actual, spec.expected); break;
++      case "not_contains": passed = !contains(actual, spec.expected); break;
++      case "matches": passed = safeRegularExpression(String(spec.expected ?? "")).test(String(actual ?? "")); break;
++      case "exists": passed = spec.expected === false ? actual === undefined || actual === null : actual !== undefined && actual !== null; break;
++      case "gt": passed = Number(actual) > Number(spec.expected); break;
++      case "gte": passed = Number(actual) >= Number(spec.expected); break;
++      case "lt": passed = Number(actual) < Number(spec.expected); break;
++      case "lte": passed = Number(actual) <= Number(spec.expected); break;
++    }
++  } catch {
++    passed = false;
++  }
++  return { name: spec.name, passed, expected: spec.expected, actual };
++}
++
++function result(item: EvalCase, started: number, assertions: AssertionResult[]): EvalResult {
++  return { id: item.id, category: item.category, passed: assertions.every((entry) => entry.passed), assertions, durationMs: Date.now() - started };
++}
++
++export function validateEvalCase(input: Partial<EvalCase>): string[] {
++  const errors: string[] = [];
++  if (!String(input.name ?? "").trim()) errors.push("用例名称不能为空");
++  if (!["policy", "structured_output", "assertion", "trajectory", "agent_task", "semantic_judge"].includes(String(input.category))) errors.push("评测类型无效");
++  if (!Number.isFinite(Number(input.weight)) || Number(input.weight) <= 0) errors.push("权重必须大于 0");
++  if (input.category === "policy" && !String(input.toolName ?? "").trim()) errors.push("policy 用例必须提供 toolName");
++  if (input.category === "agent_task" && !String(input.prompt ?? "").trim()) errors.push("agent_task 用例必须提供 prompt");
++  if (input.category === "semantic_judge" && !String(input.rubric ?? "").trim()) errors.push("semantic_judge 用例必须提供 rubric");
++  if (String(input.prompt ?? "").length > 20_000) errors.push("agent_task prompt 不能超过 20000 字符");
++  if (String(input.name ?? "").length > 120) errors.push("用例名称不能超过 120 字符");
++  if (String(input.description ?? "").length > 4_000) errors.push("用例说明不能超过 4000 字符");
++  if (!String(input.datasetId ?? "").trim()) errors.push("用例必须绑定数据集");
++  if (!['low', 'medium', 'high', 'critical'].includes(String(input.severity ?? "medium"))) errors.push("严重级别无效");
++  if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.length > 50 || input.tags.some((tag) => typeof tag !== "string" || tag.length > 64))) errors.push("标签必须是不超过 50 项、单项不超过 64 字符的字符串数组");
++  if (input.category === "assertion" && !Array.isArray(input.assertions)) errors.push("assertion 用例必须提供 assertions 数组");
++  if (input.category === "trajectory" && !Array.isArray(input.actualTools)) errors.push("trajectory 用例必须提供 actualTools 数组");
++  if (input.category === "assertion" && Array.isArray(input.assertions)) {
++    const operators = new Set(["equals", "contains", "not_contains", "matches", "exists", "gt", "gte", "lt", "lte"]);
++    if (!input.assertions.length || input.assertions.length > 100) errors.push("assertions 数量须为 1–100");
++    for (const assertion of input.assertions as AssertionSpec[]) {
++      if (!assertion || typeof assertion !== "object" || !String(assertion.name ?? "").trim() || !operators.has(assertion.operator)) {
++        errors.push("assertion 结构或 operator 无效");
++        break;
++      }
++      if (assertion.operator === "matches") {
++        try { safeRegularExpression(String(assertion.expected ?? "")); }
++        catch (error) { errors.push(error instanceof Error ? error.message : "正则表达式无效"); }
++      }
++    }
++  }
++  if (input.category === "trajectory" && Array.isArray(input.actualTools) && input.actualTools.length > 1_000) errors.push("Tool 轨迹不能超过 1000 项");
++  if (input.category === "semantic_judge") {
++    const expected = (input.expected ?? {}) as Record<string, unknown>;
++    for (const field of ["minScore", "minConfidence"] as const) {
++      const value = expected[field];
++      if (value !== undefined && (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 1)) {
++        errors.push(`${field} 必须是 0–1 之间的数字`);
++      }
++    }
++  }
++  if (Buffer.byteLength(JSON.stringify(input), "utf8") > 64 * 1024) errors.push("单个评测用例不能超过 64KB");
++  return errors;
++}
++
++export function evaluateCase(item: EvalCase): EvalResult {
++  const started = Date.now();
++  if (item.category === "policy") {
++    const actual = evaluateToolCall(String(item.toolName), item.input, {
++      allowedTools: Array.isArray(item.allowedTools) ? item.allowedTools as string[] : [],
++      disabledSkills: Array.isArray(item.disabledSkills) ? item.disabledSkills as string[] : [],
++    });
++    const expected = (item.expected ?? {}) as Record<string, unknown>;
++    return result(item, started, [
++      { name: "是否放行", passed: actual.allowed === Boolean(expected.allowed), expected: Boolean(expected.allowed), actual: actual.allowed },
++      { name: "风险等级", passed: actual.risk === expected.risk, expected: expected.risk, actual: actual.risk },
++      { name: "是否审批", passed: Boolean(actual.requiresApproval) === Boolean(expected.requiresApproval), expected: Boolean(expected.requiresApproval), actual: Boolean(actual.requiresApproval) },
++    ]);
++  }
++  if (item.category === "structured_output") {
++    let parsed: unknown;
++    try { parsed = JSON.parse(String(item.output ?? "")); } catch { parsed = undefined; }
++    const expected = (item.expected ?? {}) as Record<string, unknown>;
++    const object = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
++    return result(item, started, [
++      { name: "输出是合法 JSON", passed: parsed !== undefined, expected: "valid JSON", actual: parsed === undefined ? "invalid JSON" : "valid JSON" },
++      { name: "运行状态", passed: String(item.runStatus) === "succeeded", expected: "succeeded", actual: item.runStatus },
++      { name: "输出模式", passed: expected.mode === undefined || object.mode === expected.mode, expected: expected.mode, actual: object.mode },
++      { name: "结果状态", passed: expected.status === undefined || object.status === expected.status, expected: expected.status, actual: object.status },
++    ]);
++  }
++  if (item.category === "assertion") {
++    const specs = Array.isArray(item.assertions) ? item.assertions as AssertionSpec[] : [];
++    return result(item, started, specs.map((spec) => evaluateAssertion(item.actual, spec)));
++  }
++  if (item.category === "trajectory") {
++    const actual = Array.isArray(item.actualTools) ? item.actualTools as Array<string | { name?: string }> : [];
++    const names = actual.map((entry) => typeof entry === "string" ? entry : String(entry.name ?? ""));
++    const expected = (item.expected ?? {}) as { sequence?: string[]; includes?: string[]; excludes?: string[]; maxCalls?: number };
++    const assertions: AssertionResult[] = [];
++    if (expected.sequence) assertions.push({ name: "Tool 调用顺序", passed: JSON.stringify(names) === JSON.stringify(expected.sequence), expected: expected.sequence, actual: names });
++    if (expected.includes) for (const name of expected.includes) assertions.push({ name: `必须调用 ${name}`, passed: names.includes(name), expected: true, actual: names.includes(name) });
++    if (expected.excludes) for (const name of expected.excludes) assertions.push({ name: `禁止调用 ${name}`, passed: !names.includes(name), expected: false, actual: names.includes(name) });
++    if (expected.maxCalls !== undefined) assertions.push({ name: "最大调用次数", passed: names.length <= expected.maxCalls, expected: expected.maxCalls, actual: names.length });
++    return result(item, started, assertions.length ? assertions : [{ name: "轨迹存在", passed: names.length > 0, expected: "> 0", actual: names.length }]);
++  }
++
++  if (item.category === "semantic_judge") {
++    const evidence = (item.evidence ?? {}) as {
++      verdict?: "pass" | "fail" | "review";
++      score?: number;
++      confidence?: number;
++      rubricVersion?: string;
++      judgeSnapshot?: { provider?: string; model?: string; promptHash?: string };
++      reasons?: string[];
++    };
++    const expected = (item.expected ?? {}) as { minScore?: number; minConfidence?: number; allowedVerdicts?: string[] };
++    const allowedVerdicts = expected.allowedVerdicts?.length ? expected.allowedVerdicts : ["pass"];
++    const score = Number(evidence.score);
++    const confidence = Number(evidence.confidence);
++    return result(item, started, [
++      { name: "裁判结论", passed: allowedVerdicts.includes(String(evidence.verdict)), expected: allowedVerdicts, actual: evidence.verdict },
++      { name: "语义得分", passed: Number.isFinite(score) && score >= Number(expected.minScore ?? 0.8), expected: `>= ${expected.minScore ?? 0.8}`, actual: evidence.score },
++      { name: "裁判置信度", passed: Number.isFinite(confidence) && confidence >= Number(expected.minConfidence ?? 0.7), expected: `>= ${expected.minConfidence ?? 0.7}`, actual: evidence.confidence },
++      { name: "Rubric 版本快照", passed: Boolean(String(evidence.rubricVersion ?? "").trim()), expected: "non-empty", actual: evidence.rubricVersion },
++      { name: "Judge 模型快照", passed: Boolean(evidence.judgeSnapshot?.provider && evidence.judgeSnapshot?.model && evidence.judgeSnapshot?.promptHash), expected: "provider/model/promptHash", actual: evidence.judgeSnapshot },
++    ]);
++  }
++
++  const evidence = (item.evidence ?? {}) as { output?: string; status?: string; tools?: string[]; latencyMs?: number };
++  const expected = (item.expected ?? {}) as { contains?: string[]; notContains?: string[]; status?: string; requiredTools?: string[]; forbiddenTools?: string[]; maxLatencyMs?: number };
++  const assertions: AssertionResult[] = [];
++  for (const text of expected.contains ?? []) assertions.push({ name: `输出包含 ${text}`, passed: String(evidence.output ?? "").includes(text), expected: text, actual: evidence.output });
++  for (const text of expected.notContains ?? []) assertions.push({ name: `输出不包含 ${text}`, passed: !String(evidence.output ?? "").includes(text), expected: `not ${text}`, actual: evidence.output });
++  if (expected.status) assertions.push({ name: "运行状态", passed: evidence.status === expected.status, expected: expected.status, actual: evidence.status });
++  for (const tool of expected.requiredTools ?? []) assertions.push({ name: `必须调用 ${tool}`, passed: (evidence.tools ?? []).includes(tool), expected: true, actual: evidence.tools });
++  for (const tool of expected.forbiddenTools ?? []) assertions.push({ name: `禁止调用 ${tool}`, passed: !(evidence.tools ?? []).includes(tool), expected: false, actual: evidence.tools });
++  if (expected.maxLatencyMs !== undefined) assertions.push({ name: "延迟上限", passed: Number(evidence.latencyMs ?? Infinity) <= expected.maxLatencyMs, expected: expected.maxLatencyMs, actual: evidence.latencyMs });
++  return result(item, started, assertions.length ? assertions : [{ name: "Agent 成功执行", passed: evidence.status === "succeeded", expected: "succeeded", actual: evidence.status }]);
++}
+diff --git a/src/evals/statistics.ts b/src/evals/statistics.ts
+new file mode 100644
+index 0000000..0d284ea
+--- /dev/null
++++ b/src/evals/statistics.ts
+@@ -0,0 +1,27 @@
++export type ConfidenceInterval = {
++  level: 0.95;
++  lower: number;
++  upper: number;
++  method: "wilson";
++};
++
++/**
++ * Wilson score interval is stable for small samples and extreme pass rates where
++ * the normal approximation often produces impossible intervals below 0 or above 1.
++ */
++export function wilsonInterval(successes: number, total: number): ConfidenceInterval | undefined {
++  if (!Number.isInteger(successes) || !Number.isInteger(total) || total <= 0 || successes < 0 || successes > total) {
++    return undefined;
++  }
++  const z = 1.959963984540054;
++  const rate = successes / total;
++  const denominator = 1 + (z * z) / total;
++  const center = (rate + (z * z) / (2 * total)) / denominator;
++  const margin = z * Math.sqrt((rate * (1 - rate) + (z * z) / (4 * total)) / total) / denominator;
++  return {
++    level: 0.95,
++    lower: Math.max(0, center - margin),
++    upper: Math.min(1, center + margin),
++    method: "wilson",
++  };
++}
+diff --git a/src/observability/observability.ts b/src/observability/observability.ts
+new file mode 100644
+index 0000000..949b210
+--- /dev/null
++++ b/src/observability/observability.ts
+@@ -0,0 +1,467 @@
++import { randomUUID } from "node:crypto";
++import { mutateOwnerDocument, readOwnerDocument } from "../document-store.ts";
++import { safePreview } from "../security/redaction.ts";
++import { runtimeConfig } from "../config.ts";
++import {
++  acknowledgeObservabilityAlert,
++  appendObservabilityEvent,
++  finishObservabilityRun,
++  insertObservabilityRun,
++  pruneObservabilityRows,
++  readObservabilityRows,
++  usesMysqlStorage,
++} from "../storage/mysql.ts";
++
++export type RunStatus = "running" | "succeeded" | "failed" | "canceled" | "timed_out";
++
++export type ModelUsage = {
++  inputTokens: number;
++  outputTokens: number;
++  cacheReadTokens: number;
++  cacheWriteTokens: number;
++  totalTokens: number;
++  costUsd: number;
++  ttftMs?: number;
++  tokensPerSecond?: number;
++  retryCount: number;
++};
++
++export type TraceEvent = {
++  id: string;
++  runId: string;
++  type: string;
++  status: "running" | "success" | "failed" | "timeout" | "aborted";
++  createdAt: string;
++  toolCallId?: string;
++  toolName?: string;
++  name?: string;
++  skillName?: string;
++  inputPreview?: string;
++  outputPreview?: string;
++  message?: string;
++  durationMs?: number;
++};
++
++export type ObservedRun = {
++  id: string;
++  traceId: string;
++  conversationId: string;
++  agentId: string;
++  model: string;
++  prompt: string;
++  outputPreview?: string;
++  error?: string;
++  status: RunStatus;
++  startedAt: string;
++  updatedAt: string;
++  finishedAt?: string;
++  durationMs?: number;
++  toolCalls: number;
++  retryable: boolean;
++  loadedSkills: string[];
++  activeTools: string[];
++  targetSnapshot: Record<string, unknown>;
++  modelUsage: ModelUsage;
++};
++
++type Alert = {
++  id: string;
++  runId: string;
++  ruleName: string;
++  message: string;
++  status: "active" | "acknowledged";
++  createdAt: string;
++  acknowledgedAt?: string;
++  severity?: "warning" | "critical";
++};
++
++type ObservabilityState = {
++  runs: ObservedRun[];
++  events: TraceEvent[];
++  alerts: Alert[];
++};
++
++const emptyState = (): ObservabilityState => ({ runs: [], events: [], alerts: [] });
++const MAX_RUNS = 500;
++const MAX_EVENTS = 10_000;
++
++function normalizeState(value?: Partial<ObservabilityState> | null): ObservabilityState {
++  const emptyUsage: ModelUsage = {
++    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
++    cacheWriteTokens: 0, totalTokens: 0, costUsd: 0, retryCount: 0,
++  };
++  return {
++    runs: Array.isArray(value?.runs) ? value.runs.map((run) => ({
++      ...run,
++      loadedSkills: Array.isArray(run.loadedSkills) ? run.loadedSkills : [],
++      activeTools: Array.isArray(run.activeTools) ? run.activeTools : [],
++      targetSnapshot: run.targetSnapshot ?? {},
++      modelUsage: { ...emptyUsage, ...(run.modelUsage ?? {}) },
++    })) : [],
++    events: Array.isArray(value?.events) ? value.events : [],
++    alerts: Array.isArray(value?.alerts) ? value.alerts : [],
++  };
++}
++
++async function readState(ownerId: string): Promise<ObservabilityState> {
++  if (usesMysqlStorage()) {
++    const current = normalizeState(await readObservabilityRows(ownerId, MAX_RUNS));
++    // 兼容升级前存放在 app_documents 中的观测历史；新数据只写规范化表。
++    const legacy = await readOwnerDocument<ObservabilityState>(ownerId, "observability");
++    if (!legacy) return current;
++    const normalizedLegacy = normalizeState(legacy);
++    const currentRunIds = new Set(current.runs.map((run) => run.id));
++    const runs = [...current.runs, ...normalizedLegacy.runs.filter((run) => !currentRunIds.has(run.id))]
++      .sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, MAX_RUNS);
++    const retained = new Set(runs.map((run) => run.id));
++    return {
++      runs,
++      events: [...current.events, ...normalizedLegacy.events].filter((event) => retained.has(event.runId)).slice(-MAX_EVENTS),
++      alerts: [...current.alerts, ...normalizedLegacy.alerts].filter((alert) => retained.has(alert.runId)).slice(0, 500),
++    };
++  }
++  const value = await readOwnerDocument<ObservabilityState>(ownerId, "observability");
++  return normalizeState(value);
++}
++
++function mutate<T>(ownerId: string, action: (state: ObservabilityState) => T | Promise<T>): Promise<T> {
++  return mutateOwnerDocument(ownerId, "observability", emptyState, async (state) => {
++    Object.assign(state, normalizeState(state));
++    const result = await action(state);
++    state.runs = state.runs.slice(0, MAX_RUNS);
++    const retained = new Set(state.runs.map((run) => run.id));
++    state.events = state.events.filter((event) => retained.has(event.runId)).slice(-MAX_EVENTS);
++    state.alerts = state.alerts.filter((alert) => retained.has(alert.runId)).slice(0, 500);
++    return result;
++  });
++}
++
++function trace(runId: string, type: string, status: TraceEvent["status"], fields: Partial<TraceEvent> = {}): TraceEvent {
++  return { id: `trace_${randomUUID()}`, runId, type, status, createdAt: new Date().toISOString(), ...fields };
++}
++
++/** Provider usage fields are external input; reject NaN/Infinity/negative values before aggregation. */
++function usageNumber(value: unknown): number {
++  const parsed = Number(value ?? 0);
++  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
++}
++
++export type RunStart = Pick<ObservedRun, "conversationId" | "agentId" | "model"> & {
++  prompt: string;
++  loadedSkills: string[];
++  activeTools: string[];
++  targetSnapshot?: Record<string, unknown>;
++};
++
++export async function startObservedRun(ownerId: string, input: RunStart): Promise<ObservedRun> {
++  const now = new Date().toISOString();
++  const run: ObservedRun = {
++    id: `run_${randomUUID()}`,
++    traceId: randomUUID(),
++    conversationId: input.conversationId,
++    agentId: input.agentId,
++    model: input.model,
++    prompt: safePreview(input.prompt, 1000),
++    status: "running",
++    startedAt: now,
++    updatedAt: now,
++    toolCalls: 0,
++    retryable: false,
++    loadedSkills: input.loadedSkills,
++    activeTools: input.activeTools,
++    targetSnapshot: input.targetSnapshot ?? {},
++    modelUsage: {
++      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
++      cacheWriteTokens: 0, totalTokens: 0, costUsd: 0, retryCount: 0,
++    },
++  };
++  const events = [trace(run.id, "run_start", "running", { inputPreview: run.prompt })];
++  for (const skillName of run.loadedSkills) {
++    events.push(trace(run.id, "skill_trace", "success", {
++        name: skillName,
++        skillName,
++        message: "本轮已加载该 Skill（不代表模型实际调用）",
++    }));
++  }
++  if (usesMysqlStorage()) {
++    await insertObservabilityRun(ownerId, run, events);
++  } else {
++    await mutate(ownerId, (state) => {
++      state.runs.unshift(run);
++      state.events.push(...events);
++    });
++  }
++  return run;
++}
++
++export type RunRecorder = ReturnType<typeof createRunRecorder>;
++
++export function createRunRecorder(ownerId: string, run: ObservedRun) {
++  const toolStarted = new Map<string, { startedAt: number; toolName?: string }>();
++  let firstTokenAt: number | undefined;
++  let output = "";
++  let usage = { ...run.modelUsage };
++  let toolCalls = 0;
++  const pendingEvents = new Set<Promise<void>>();
++
++  async function event(type: string, status: TraceEvent["status"], fields: Partial<TraceEvent> = {}) {
++    const item = trace(run.id, type, status, fields);
++    if (usesMysqlStorage()) await appendObservabilityEvent(ownerId, item);
++    else await mutate(ownerId, (state) => state.events.push(item));
++  }
++
++  function queueEvent(type: string, status: TraceEvent["status"], fields: Partial<TraceEvent> = {}): void {
++    const pending = event(type, status, fields)
++      .catch((eventError) => console.error("[observability:event-error]", eventError))
++      .finally(() => pendingEvents.delete(pending));
++    pendingEvents.add(pending);
++  }
++
++  function consumePiEvent(piEvent: any): void {
++    const now = Date.now();
++    if (piEvent.type === "message_update" && piEvent.assistantMessageEvent?.type === "text_delta") {
++      firstTokenAt ??= now;
++      if (output.length < 20_000) output += String(piEvent.assistantMessageEvent.delta ?? "").slice(0, 20_000 - output.length);
++      return;
++    }
++    if (piEvent.type === "message_end" && piEvent.message?.role === "assistant") {
++      const item = piEvent.message;
++      const raw = item.usage ?? {};
++      const inputTokens = usageNumber(raw.input ?? raw.inputTokens);
++      const outputTokens = usageNumber(raw.output ?? raw.outputTokens);
++      usage.inputTokens += inputTokens;
++      usage.outputTokens += outputTokens;
++      usage.cacheReadTokens += usageNumber(raw.cacheRead ?? raw.cacheReadTokens);
++      usage.cacheWriteTokens += usageNumber(raw.cacheWrite ?? raw.cacheWriteTokens);
++      usage.costUsd += usageNumber(raw.cost?.total ?? raw.cost);
++      usage.totalTokens += raw.totalTokens === undefined
++        ? inputTokens + outputTokens
++        : usageNumber(raw.totalTokens);
++      return;
++    }
++    if (piEvent.type === "tool_execution_start") {
++      toolCalls += 1;
++      toolStarted.set(piEvent.toolCallId, { startedAt: now, toolName: piEvent.toolName });
++      queueEvent("tool_start", "running", {
++        toolCallId: piEvent.toolCallId, toolName: piEvent.toolName, name: piEvent.toolName,
++        inputPreview: safePreview(piEvent.args ?? {}, 500),
++      });
++      return;
++    }
++    if (piEvent.type === "tool_execution_end") {
++      const started = toolStarted.get(piEvent.toolCallId);
++      toolStarted.delete(piEvent.toolCallId);
++      queueEvent("tool_end", piEvent.isError ? "failed" : "success", {
++        toolCallId: piEvent.toolCallId, toolName: piEvent.toolName, name: piEvent.toolName,
++        outputPreview: safePreview(piEvent.result ?? {}, 500),
++        durationMs: started ? now - started.startedAt : undefined,
++      });
++      return;
++    }
++    if (piEvent.type === "auto_retry_start") {
++      usage.retryCount += 1;
++      queueEvent("retry", "running", { message: safePreview(piEvent.errorMessage ?? "模型重试", 500) });
++    }
++  }
++
++  async function finish(status: Exclude<RunStatus, "running">, error?: unknown): Promise<void> {
++    // 确保最终状态落库前，前面的 Tool/重试事件已经完成；单条事件失败只记录日志，
++    // 不阻断聊天主链路，也不会让 Run 永久停在 running。
++    await Promise.allSettled([...pendingEvents]);
++    const finished = Date.now();
++    const danglingToolCount = toolStarted.size;
++    for (const [toolCallId, started] of toolStarted) {
++      queueEvent("tool_end", status === "timed_out" ? "timeout" : status === "canceled" ? "aborted" : "failed", {
++        toolCallId,
++        toolName: started.toolName,
++        name: started.toolName,
++        message: status === "succeeded" ? "运行结束前 Tool 未返回结果" : `运行以 ${status} 结束，Tool 调用未完成`,
++        durationMs: Math.max(0, finished - started.startedAt),
++      });
++    }
++    toolStarted.clear();
++    await Promise.allSettled([...pendingEvents]);
++    const durationMs = Math.max(0, finished - new Date(run.startedAt).getTime());
++    const ttftMs = firstTokenAt ? firstTokenAt - new Date(run.startedAt).getTime() : undefined;
++    usage = {
++      ...usage,
++      ttftMs,
++      tokensPerSecond: durationMs > 0 ? usage.outputTokens / (durationMs / 1000) : undefined,
++    };
++    const finishedAt = new Date(finished).toISOString();
++    const stored: ObservedRun = {
++      ...run,
++      status,
++      finishedAt,
++      updatedAt: finishedAt,
++      durationMs,
++      outputPreview: safePreview(output, 2000),
++      error: error ? safePreview(error instanceof Error ? error.message : error, 1000) : undefined,
++      retryable: status === "failed" || status === "timed_out" || status === "canceled",
++      modelUsage: usage,
++      toolCalls,
++    };
++    const finalEvent = trace(run.id, status === "succeeded" ? "run_end" : "error", status === "succeeded" ? "success" : status === "timed_out" ? "timeout" : status === "canceled" ? "aborted" : "failed", {
++      outputPreview: stored.outputPreview,
++      message: stored.error,
++      durationMs,
++    });
++    const alertReasons: string[] = [];
++    if (status !== "succeeded") alertReasons.push(stored.error || `运行状态：${status}`);
++    if (danglingToolCount > 0) alertReasons.push(`${danglingToolCount} 个 Tool 调用在运行结束时仍未完成`);
++    if (durationMs >= runtimeConfig.observabilityAlertDurationMs) {
++      alertReasons.push(`运行耗时 ${durationMs}ms 超过阈值 ${runtimeConfig.observabilityAlertDurationMs}ms`);
++    }
++    if (runtimeConfig.observabilityAlertCostUsd > 0 && usage.costUsd >= runtimeConfig.observabilityAlertCostUsd) {
++      alertReasons.push(`单次成本 $${usage.costUsd.toFixed(4)} 超过阈值 $${runtimeConfig.observabilityAlertCostUsd.toFixed(4)}`);
++    }
++    const alert: Alert | undefined = alertReasons.length ? {
++      id: `alert_${randomUUID()}`, runId: run.id,
++      ruleName: status === "succeeded" ? "Agent 运行 SLO 告警" : "Agent 运行异常",
++      message: alertReasons.join("；"), status: "active", createdAt: finishedAt,
++      severity: status === "succeeded" ? "warning" : "critical",
++    } : undefined;
++    if (usesMysqlStorage()) {
++      await finishObservabilityRun(ownerId, stored, finalEvent, alert);
++      void pruneObservabilityRows(ownerId, MAX_RUNS).catch((pruneError) => {
++        console.error("[observability:retention-error]", pruneError);
++      });
++    } else {
++      await mutate(ownerId, (state) => {
++        const index = state.runs.findIndex((item) => item.id === run.id);
++        if (index >= 0) state.runs[index] = stored;
++        state.events.push(finalEvent);
++        if (alert) state.alerts.unshift(alert);
++      });
++    }
++  }
++  return { consumePiEvent, finish, event, getOutput: () => output };
++}
++
++function percentile(values: number[], fraction: number): number {
++  if (!values.length) return 0;
++  const sorted = [...values].sort((a, b) => a - b);
++  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
++}
++
++export async function getObservability(ownerId: string, filters?: {
++  query?: string;
++  status?: string;
++  from?: string;
++  to?: string;
++  limit?: number;
++  offset?: number;
++}) {
++  const state = await readState(ownerId);
++  const query = filters?.query?.toLowerCase();
++  const from = filters?.from ? new Date(filters.from).getTime() : Number.NEGATIVE_INFINITY;
++  const to = filters?.to ? new Date(filters.to).getTime() : Number.POSITIVE_INFINITY;
++  const filteredRuns = state.runs.filter((run) =>
++    (!filters?.status || run.status === filters.status) &&
++    (Number.isNaN(from) || new Date(run.startedAt).getTime() >= from) &&
++    (Number.isNaN(to) || new Date(run.startedAt).getTime() <= to) &&
++    (!query || `${run.prompt} ${run.outputPreview ?? ""} ${run.error ?? ""} ${run.traceId}`.toLowerCase().includes(query))
++  );
++  const requestedLimit = Number(filters?.limit ?? MAX_RUNS);
++  const requestedOffset = Number(filters?.offset ?? 0);
++  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(MAX_RUNS, Math.floor(requestedLimit))) : MAX_RUNS;
++  const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
++  const runs = filteredRuns.slice(offset, offset + limit);
++  const pageRunIds = new Set(runs.map((run) => run.id));
++  const completed = state.runs.filter((run) => run.status !== "running");
++  const durations = completed.map((run) => run.durationMs ?? 0);
++  const successful = completed.filter((run) => run.status === "succeeded");
++  const toolEnds = state.events.filter((event) => event.type === "tool_end");
++  const toolNames = new Set(toolEnds.map((event) => event.toolName).filter(Boolean) as string[]);
++  const toolStats = [...toolNames].map((name) => {
++    const items = toolEnds.filter((event) => event.toolName === name);
++    const failed = items.filter((event) => event.status === "failed").length;
++    return { name, label: name, status: failed ? "degraded" : "healthy", calls: items.length, failed, avgMs: items.reduce((sum, item) => sum + (item.durationMs ?? 0), 0) / items.length };
++  });
++  const skillNames = new Set(state.runs.flatMap((run) => run.loadedSkills));
++  const skillStats = [...skillNames].map((name) => {
++    const items = state.runs.filter((run) => run.loadedSkills.includes(name));
++    const failed = items.filter((run) => run.status === "failed" || run.status === "timed_out").length;
++    return {
++      name,
++      label: `${name}（已加载）`,
++      status: failed ? "degraded" : "healthy",
++      calls: items.length,
++      failed,
++      avgMs: items.reduce((sum, run) => sum + (run.durationMs ?? 0), 0) / items.length,
++    };
++  });
++  const overview = {
++    totalRuns: state.runs.length,
++    successRuns: successful.length,
++    failedRuns: completed.length - successful.length,
++    runningRuns: state.runs.filter((run) => run.status === "running").length,
++    successRate: completed.length ? Math.round(successful.length / completed.length * 100) : 0,
++    p50DurationMs: percentile(durations, .5), p95DurationMs: percentile(durations, .95), p99DurationMs: percentile(durations, .99),
++    inputTokens: state.runs.reduce((sum, run) => sum + run.modelUsage.inputTokens, 0),
++    outputTokens: state.runs.reduce((sum, run) => sum + run.modelUsage.outputTokens, 0),
++    totalCostUsd: state.runs.reduce((sum, run) => sum + run.modelUsage.costUsd, 0),
++    avgTtftMs: completed.length ? completed.reduce((sum, run) => sum + (run.modelUsage.ttftMs ?? 0), 0) / completed.length : 0,
++    avgTokensPerSecond: completed.length ? completed.reduce((sum, run) => sum + (run.modelUsage.tokensPerSecond ?? 0), 0) / completed.length : 0,
++    modelRetries: state.runs.reduce((sum, run) => sum + run.modelUsage.retryCount, 0),
++    activeAlerts: state.alerts.filter((alert) => alert.status === "active").length,
++  };
++  const trendMap = new Map<string, { date: string; runs: number; succeeded: number; durationMs: number[]; costUsd: number }>();
++  for (const run of state.runs) {
++    const date = run.startedAt.slice(0, 10);
++    const point = trendMap.get(date) ?? { date, runs: 0, succeeded: 0, durationMs: [], costUsd: 0 };
++    point.runs += 1;
++    if (run.status === "succeeded") point.succeeded += 1;
++    if (run.durationMs !== undefined) point.durationMs.push(run.durationMs);
++    point.costUsd += run.modelUsage.costUsd;
++    trendMap.set(date, point);
++  }
++  const trends = [...trendMap.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-30).map((point) => ({
++    date: point.date,
++    runs: point.runs,
++    successRate: point.runs ? Math.round(point.succeeded / point.runs * 100) : 0,
++    p95DurationMs: percentile(point.durationMs, .95),
++    costUsd: point.costUsd,
++  }));
++  return {
++    overview,
++    runs,
++    events: state.events.filter((event) => pageRunIds.has(event.runId)),
++    alerts: state.alerts,
++    toolStats,
++    skillStats,
++    trends,
++    pagination: { total: filteredRuns.length, limit, offset, hasMore: offset + runs.length < filteredRuns.length },
++  };
++}
++
++export async function acknowledgeAlert(ownerId: string, alertId: string): Promise<boolean> {
++  if (usesMysqlStorage()) {
++    const state = await readState(ownerId);
++    const alert = state.alerts.find((item) => item.id === alertId);
++    if (!alert) return false;
++    alert.status = "acknowledged";
++    alert.acknowledgedAt = new Date().toISOString();
++    if (await acknowledgeObservabilityAlert(ownerId, alertId, alert)) return true;
++    // 旧版 JSON 历史中的告警仍允许确认，便于无停机升级后逐步消化。
++    return mutate(ownerId, (legacy) => {
++      const item = legacy.alerts.find((entry) => entry.id === alertId);
++      if (!item) return false;
++      Object.assign(item, alert);
++      return true;
++    });
++  }
++  return mutate(ownerId, (state) => {
++    const alert = state.alerts.find((item) => item.id === alertId);
++    if (!alert) return false;
++    alert.status = "acknowledged";
++    alert.acknowledgedAt = new Date().toISOString();
++    return true;
++  });
++}
++
++export async function getObservedRun(ownerId: string, runId: string): Promise<{ run: ObservedRun; events: TraceEvent[] } | null> {
++  const state = await readState(ownerId);
++  const run = state.runs.find((item) => item.id === runId);
++  return run ? { run, events: state.events.filter((event) => event.runId === runId) } : null;
++}
+diff --git a/src/runtime/runtime-context.ts b/src/runtime/runtime-context.ts
+index dad8ab3..f314fcd 100644
+--- a/src/runtime/runtime-context.ts
++++ b/src/runtime/runtime-context.ts
+@@ -131,7 +131,12 @@ export function createRuntimeRegistry(options: RuntimeRegistryOptions) {
+     runtimes.clear();
+   }
+ 
+-  return { getRuntime, disposeAll };
++  /** 评测等隔离任务使用的新上下文，不加入用户聊天缓存。 */
++  function createDetachedRuntime(user: AuthUser): RuntimeContext {
++    return createRuntimeContext(user);
++  }
++
++  return { getRuntime, createDetachedRuntime, disposeAll };
+ }
+ 
+ /**
+diff --git a/src/runtime/session-runtime.ts b/src/runtime/session-runtime.ts
+index 39cf72f..447fe00 100644
+--- a/src/runtime/session-runtime.ts
++++ b/src/runtime/session-runtime.ts
+@@ -1,6 +1,7 @@
+ import {
+   // 根据模型、资源加载器、Tool 和 SessionManager 创建真正的 Pi AgentSession。
+   createAgentSession,
++  SessionManager,
+   // ModelRuntime 负责发现模型，并提供模型运行时能力。
+   type ModelRuntime,
+ } from "@earendil-works/pi-coding-agent";
+@@ -59,6 +60,29 @@ type SessionRuntimeOptions = {
+  * 不再关心 Pi Session 的创建、切换和存储细节。
+  */
+ export function createSessionRuntime(options: SessionRuntimeOptions) {
++  async function buildAgentSession(
++    context: RuntimeContext,
++    state: AppState,
++    agentId: string | undefined,
++    sessionManager: SessionManager,
++    safeEvaluation = false,
++  ) {
++    const executableTools = await options.applyRuntimePolicy(context, state, agentId);
++    const allSkillTools = await discoverSkillPackageTools(state.skills);
++    const customTools = createSkillToolDefinitions(allSkillTools);
++    const allToolNames = [...new Set([...options.coreTools, ...allSkillTools.map((item) => item.manifest.name)])];
++    const { session } = await createAgentSession({
++      cwd: process.cwd(), model: options.model, modelRuntime: options.modelRuntime,
++      resourceLoader: context.loader, sessionManager, customTools, tools: allToolNames,
++    });
++    await session.bindExtensions({ mode: "print" });
++    const activeTools = safeEvaluation
++      ? executableTools.filter((name) => ["read", "grep", "find", "ls"].includes(name))
++      : executableTools;
++    session.setActiveToolsByName(activeTools);
++    return session;
++  }
++
+   /** 为指定业务会话创建一个新的 AgentSession。 */
+   async function createNewAgentSession(
+     context: RuntimeContext,
+@@ -66,29 +90,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions) {
+     conversation: ConversationRecord,
+     ownerId: string,
+   ) {
+-    // 第一步：根据最新 Agent、Skill、Tool 配置计算白名单。
+-    // 不能沿用上一次结果，因为用户可能刚刚启用或禁用了某项能力。
+-    const executableTools = await options.applyRuntimePolicy(
+-      context,
+-      state,
+-      conversation.agentId,
+-    );
+-
+-    // 第二步：发现 AppState 中所有可信 Skill 包声明的 Tool。
+-    // 这里负责“注册”，真正能否调用仍由 executableTools 和 guard 控制。
+-    const allSkillTools = await discoverSkillPackageTools(state.skills);
+-    const customTools = createSkillToolDefinitions(allSkillTools);
+-
+-    // Pi SDK 创建 Session 时需要知道全部可注册 Tool 的名称。
+-    // Set 用于去重，避免 Skill Tool 与基础 Tool 重名时重复注册。
+-    const allToolNames = [
+-      ...new Set([
+-        ...options.coreTools,
+-        ...allSkillTools.map((item) => item.manifest.name),
+-      ]),
+-    ];
+-
+-    // 第三步：由存储模块返回统一的 SessionManager。
++    // 由存储模块返回统一的 SessionManager。
+     // MySQL 模式会从 pi_sessions 恢复 entries；file 模式会创建或打开 JSONL。
+     const sessionManager = await conversationSessionManager(
+       ownerId,
+@@ -97,24 +99,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions) {
+ 
+     // 第四步：把模型、Loader、SessionManager 和 Tool 交给 Pi SDK，
+     // 创建本次业务会话真正使用的 AgentSession。
+-    const { session } = await createAgentSession({
+-      // Tool 执行和相对路径解析都以项目根目录为工作目录。
+-      cwd: process.cwd(),
+-      model: options.model,
+-      modelRuntime: options.modelRuntime,
+-      // loader 已经绑定当前用户最新的系统提示词、Skill 和扩展。
+-      resourceLoader: context.loader,
+-      sessionManager,
+-      // customTools 是 Skill 包提供的自定义 Tool 实现。
+-      customTools,
+-      // tools 是基础 Tool 与 Skill Tool 的完整名称集合。
+-      tools: allToolNames,
+-    });
+-
+-    // 第五步：先绑定 guard、audit 等扩展，再设置本轮白名单。
+-    // 这样模型最终只能看到并调用策略允许的 Tool。
+-    await session.bindExtensions({ mode: "print" });
+-    session.setActiveToolsByName(executableTools);
++    const session = await buildAgentSession(
++      context, state, conversation.agentId, sessionManager,
++    );
+ 
+     // 第六步：业务会话只保存当前存储模式需要的定位信息，
+     // 避免同时保留 file 和 MySQL 两种来源而产生歧义。
+@@ -258,5 +245,17 @@ export function createSessionRuntime(options: SessionRuntimeOptions) {
+     getConversationTree,
+     navigateConversationTree,
+     persistPiSession,
++    /** 为评测创建不写入业务会话的独立 Session；只开放只读内置 Tool。 */
++    createEvaluationSession: (
++      context: RuntimeContext,
++      state: AppState,
++      agentId?: string,
++    ) => buildAgentSession(
++      context,
++      state,
++      agentId,
++      SessionManager.inMemory(process.cwd()),
++      true,
++    ),
+   };
+ }
+diff --git a/src/server.ts b/src/server.ts
+index c9023d6..a1ddd4c 100644
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -1,5 +1,5 @@
+ import express from "express";
+-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
++import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+ import { readFileSync } from "node:fs";
+ import path from "node:path";
+ import {
+@@ -22,10 +22,46 @@ import {
+ import { createSessionRuntime } from "./runtime/session-runtime.ts";
+ import { safePreview } from "./security/redaction.ts";
+ import { discoverSkillPackageTools } from "./skill-tools.ts";
++import {
++  acknowledgeAlert,
++  createRunRecorder,
++  getObservability,
++  getObservedRun,
++  startObservedRun,
++} from "./observability/observability.ts";
++import {
++  createDataset,
++  createEvalCase,
++  createJob,
++  acquireRunnerLease,
++  claimEvalJob,
++  deleteEvalCase,
++  diffDataset,
++  getEvalDashboard,
++  getEvalAudit,
++  getJob,
++  finishEvalJob,
++  readEvalState,
++  renderRunReport,
++  releaseRunnerLease,
++  renewEvalJobLease,
++  requestJobCancellation,
++  runEvaluation,
++  type RunEvalOptions,
++  saveProfile,
++  saveReview,
++  setBaseline,
++  updateEvalCase,
++  updateEvalJobProgress,
++  updateDatasetLifecycle,
++  updateGate,
++  verifyEvalAudit,
++} from "./evals/eval-center.ts";
+ import {
+   closeMysqlStorage,
+   deletePiSession,
+   mysqlStorageHealth,
++  recoverStaleObservabilityRuns,
+   usesMysqlStorage,
+   verifyMysqlStorage,
+ } from "./storage/mysql.ts";
+@@ -79,7 +115,7 @@ const selectedModel = model;
+ const modelLabel = `${selectedModel.provider}/${selectedModel.id}`;
+ console.log(`New-Agent 使用模型：${modelLabel}`);
+ 
+-// file 模式会跳过；MySQL 模式只校验连接和课前准备好的五张表。
++// file 模式会跳过；MySQL 模式只校验连接和迁移脚本准备好的必需表。
+ // 应用启动期间不会执行 CREATE DATABASE、CREATE TABLE 或结构迁移。
+ await verifyMysqlStorage();
+ console.log(`数据存储：${usesMysqlStorage() ? "MySQL" : runtimeConfig.storage}`);
+@@ -266,6 +302,29 @@ function readSystemPrompt(): string {
+   );
+ }
+ 
++function contentHash(value: unknown): string {
++  return createHash("sha256").update(
++    typeof value === "string" ? value : JSON.stringify(value),
++  ).digest("hex");
++}
++
++function buildTargetSnapshot(state: AppState, agentId?: string) {
++  const agent = getActiveAgent(state, agentId);
++  const skillIds = new Set(agent?.skillIds ?? []);
++  const skills = state.skills.filter((item) => skillIds.has(item.id));
++  const tools = state.tools.filter((item) => (agent?.toolNames ?? []).includes(item.name));
++  const systemPrompt = readSystemPrompt();
++  return {
++    agentId: agent?.id,
++    agentConfigHash: contentHash(agent ?? null),
++    promptHash: contentHash(systemPrompt),
++    model: modelLabel,
++    skills: skills.map((item) => ({ id: item.id, version: item.version, hash: contentHash(item) })),
++    toolConfigHash: contentHash(tools),
++    capturedAt: new Date().toISOString(),
++  };
++}
++
+ // 审批超时后同步更新 AppState；Registry 会同时把等待中的 Tool 按拒绝恢复。
+ async function expireApproval(
+   ctx: RuntimeContext,
+@@ -373,6 +432,7 @@ const runtimeRegistry = createRuntimeRegistry({
+ 
+ // 会话运行时负责 AgentSession 的创建、恢复、切换和持久化。
+ const {
++  createEvaluationSession,
+   getConversationSession,
+   getConversationTree,
+   navigateConversationTree,
+@@ -391,19 +451,44 @@ const {
+ const app = express();
+ const port = runtimeConfig.port;
+ 
++type AsyncHandler = (
++  request: express.Request,
++  response: express.Response,
++  next: express.NextFunction,
++) => Promise<unknown>;
++
++/** Express 4 不会自动转发 Promise rejection，统一交给末尾错误处理中间件。 */
++function asyncRoute(handler: AsyncHandler): express.RequestHandler {
++  return (request, response, next) => {
++    void handler(request, response, next).catch(next);
++  };
++}
++
+ app.disable("x-powered-by");
+ app.use(express.json({ limit: "64kb" }));
+ app.use(express.static("public"));
+ 
+-// 观测面板可以直接复用这个存储健康信号。
+-app.get("/health", async (_request, response) => {
++// Liveness only proves that the event loop can answer; it must not depend on MySQL.
++app.get("/health/live", (_request, response) => {
++  response.set("Cache-Control", "no-store").json({
++    ok: true,
++    uptimeSeconds: Math.floor(process.uptime()),
++    timestamp: new Date().toISOString(),
++  });
++});
++
++// Readiness includes required infrastructure and is also kept at /health for compatibility.
++const readinessHandler = asyncRoute(async (_request, response) => {
+   const storage = await mysqlStorageHealth();
+-  response.status(storage.healthy ? 200 : 503).json({
++  response.set("Cache-Control", "no-store").status(storage.healthy ? 200 : 503).json({
+     ok: storage.healthy,
+     model: modelLabel,
+     storage,
++    timestamp: new Date().toISOString(),
+   });
+ });
++app.get("/health", readinessHandler);
++app.get("/health/ready", readinessHandler);
+ 
+ function parseCookies(header?: string): Record<string, string> {
+   return Object.fromEntries(
+@@ -741,27 +826,408 @@ app.get("/api/state", async (_request, response) => {
+   });
+ });
+ 
+-app.get("/api/observability", (_request, response) => {
+-  response.json({
+-    overview: {},
+-    runs: [],
+-    alerts: [],
+-    skillStats: [],
+-    toolStats: [],
+-    trends: [],
++app.get("/api/observability", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  response.json(await getObservability(user.id, {
++    query: String(request.query.query ?? request.query.q ?? ""),
++    status: String(request.query.status ?? ""),
++    from: request.query.from ? String(request.query.from) : undefined,
++    to: request.query.to ? String(request.query.to) : undefined,
++    limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
++    offset: request.query.offset === undefined ? undefined : Number(request.query.offset),
++  }));
++}));
++
++app.get("/api/observability/runs", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  const data = await getObservability(user.id, {
++    query: String(request.query.query ?? request.query.q ?? ""),
++    status: String(request.query.status ?? ""),
++    from: request.query.from ? String(request.query.from) : undefined,
++    to: request.query.to ? String(request.query.to) : undefined,
++    limit: request.query.limit === undefined ? 100 : Number(request.query.limit),
++    offset: request.query.offset === undefined ? 0 : Number(request.query.offset),
+   });
+-});
++  response.json({ runs: data.runs, events: data.events, pagination: data.pagination });
++}));
++
++app.post("/api/observability/alerts/:id/ack", asyncRoute(async (request, response) => {
++  const ok = await acknowledgeAlert(requestUser(response).id, request.params.id);
++  response.status(ok ? 200 : 404).json(ok ? { ok } : { error: "告警不存在" });
++}));
++
++app.get("/api/evals", asyncRoute(async (_request, response) => {
++  response.json(await getEvalDashboard(requestUser(response).id));
++}));
++
++app.get("/api/evals/audit", asyncRoute(async (request, response) => {
++  response.json(await getEvalAudit(requestUser(response).id, {
++    action: request.query.action ? String(request.query.action) : undefined,
++    entityType: request.query.entityType ? String(request.query.entityType) : undefined,
++    limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
++    offset: request.query.offset === undefined ? undefined : Number(request.query.offset),
++  }));
++}));
++
++app.get("/api/evals/audit/verify", asyncRoute(async (_request, response) => {
++  const integrity = await verifyEvalAudit(requestUser(response).id);
++  response.status(integrity.valid ? 200 : 409).json(integrity);
++}));
++
++app.post("/api/evals/cases", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  try { response.status(201).json(await createEvalCase(user.id, request.body, user.id)); }
++  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "创建用例失败" }); }
++}));
+ 
+-app.get("/api/evals", (_request, response) => {
+-  response.json({
+-    summary: { totalCases: 0 },
+-    cases: [],
+-    datasets: [],
+-    runs: [],
+-    jobs: [],
+-    gate: { minPassRate: 1, maxRegressions: 0 },
++app.put("/api/evals/cases/:id", asyncRoute(async (request, response) => {
++  try {
++    const user = requestUser(response);
++    const item = await updateEvalCase(user.id, request.params.id, request.body, user.id);
++    response.status(item ? 200 : 404).json(item ?? { error: "评测用例不存在" });
++  } catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "更新用例失败" }); }
++}));
++
++app.delete("/api/evals/cases/:id", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  const ok = await deleteEvalCase(user.id, request.params.id, user.id);
++  response.status(ok ? 200 : 404).json(ok ? { ok } : { error: "评测用例不存在" });
++}));
++
++app.post("/api/evals/datasets", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  try { response.status(201).json(await createDataset(user.id, request.body ?? {}, user.id)); }
++  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "创建数据集失败" }); }
++}));
++
++app.put("/api/evals/datasets/:id/lifecycle", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  try {
++    const dataset = await updateDatasetLifecycle(user.id, request.params.id, request.body ?? {}, user.id);
++    response.status(dataset ? 200 : 404).json(dataset ?? { error: "数据集不存在" });
++  } catch (error) {
++    response.status(400).json({ error: error instanceof Error ? error.message : "数据集生命周期参数无效" });
++  }
++}));
++
++app.get("/api/evals/datasets/:id/diff", asyncRoute(async (request, response) => {
++  const diff = await diffDataset(requestUser(response).id, request.params.id);
++  response.status(diff ? 200 : 404).json(diff ?? { error: "数据集不存在" });
++}));
++
++app.post("/api/evals/profiles", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  try { response.status(201).json(await saveProfile(user.id, request.body, undefined, user.id)); }
++  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "Profile 参数无效" }); }
++}));
++
++app.put("/api/evals/profiles/:id", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  try { response.json(await saveProfile(user.id, request.body, request.params.id, user.id)); }
++  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "Profile 参数无效" }); }
++}));
++
++app.put("/api/evals/gate", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  try { response.json(await updateGate(user.id, request.body, user.id)); }
++  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "门禁参数无效" }); }
++}));
++
++app.post("/api/evals/runs", asyncRoute(async (request, response) => {
++  try { response.status(201).json(await runEvaluation(requestUser(response).id, request.body)); }
++  catch (error) { response.status(400).json({ error: error instanceof Error ? error.message : "运行评测失败" }); }
++}));
++
++async function executeAgentEvaluation(
++  user: AuthUser,
++  options: RunEvalOptions,
++  jobId?: string,
++  jobLeaseId?: string,
++): Promise<Awaited<ReturnType<typeof runEvaluation>>> {
++  const evalState = await readEvalState(user.id);
++  const requestedIds = Array.isArray(options.caseIds) ? options.caseIds.map(String) : [];
++  const cases = evalState.cases.filter((item) =>
++    item.enabled && item.category === "agent_task" &&
++    (!options.datasetId || item.datasetId === options.datasetId) &&
++    (!requestedIds.length || requestedIds.includes(item.id))
++  );
++  if (!cases.length) throw new Error("没有可执行的 agent_task 用例");
++  if (cases.length > runtimeConfig.evalMaxCasesPerRun) {
++    throw new Error(`单次评测最多运行 ${runtimeConfig.evalMaxCasesPerRun} 条用例`);
++  }
++  const trialCount = Number(options.trialCount ?? 1);
++  if (!Number.isInteger(trialCount) || trialCount <= 0 || trialCount > runtimeConfig.evalMaxTrialsPerCase) {
++    throw new Error(`trialCount 必须是 1–${runtimeConfig.evalMaxTrialsPerCase} 的整数`);
++  }
++  const totalExecutions = cases.length * trialCount;
++  const outputLimitPerTrial = Math.min(
++    runtimeConfig.evalMaxOutputChars,
++    Math.max(1_000, Math.floor(runtimeConfig.evalMaxEvidenceBytes / Math.max(1, totalExecutions))),
++  );
++  if (jobId && jobLeaseId) {
++    await updateEvalJobProgress(user.id, jobId, jobLeaseId, { completed: 0, total: totalExecutions, phase: "preparing" });
++  }
++
++  const state = await readState(selectedModel, user.id);
++  const timeoutFor = (agentId: string) => Math.max(1_000, Number(getActiveAgent(state, agentId)?.timeoutMs || 120_000));
++  const agentIds = cases.map((item) => String(item.agentId || options.agentId || getActiveAgent(state)?.id || ""));
++  const leaseMs = Math.min(24 * 60 * 60 * 1000, agentIds.reduce((sum, agentId) => sum + timeoutFor(agentId) * trialCount, 60_000));
++  const runnerLeaseId = await acquireRunnerLease(user.id, leaseMs);
++  if (!runnerLeaseId) throw new Error("已有 Agent Runner 正在执行");
++
++  const evaluationRuntime = runtimeRegistry.createDetachedRuntime(user);
++  try {
++    const evidenceByCase: Record<string, unknown[]> = {};
++    for (let index = 0; index < cases.length; index += 1) {
++      const item = cases[index];
++      const agentId = agentIds[index];
++      evidenceByCase[item.id] = [];
++      for (let trialIndex = 0; trialIndex < trialCount; trialIndex += 1) {
++        if (jobId && (await getJob(user.id, jobId))?.cancelRequested) throw new Error("评测任务已取消");
++        const completed = index * trialCount + trialIndex;
++        if (jobId && jobLeaseId) {
++          await updateEvalJobProgress(user.id, jobId, jobLeaseId, {
++            completed, total: totalExecutions, phase: `executing_trial_${trialIndex + 1}`, currentCaseId: item.id,
++          });
++        }
++        const session = await createEvaluationSession(evaluationRuntime, state, agentId);
++        let output = "";
++        let outputTruncated = false;
++        const tools: string[] = [];
++        let status = "succeeded";
++        const started = Date.now();
++        let timedOut = false;
++        let canceled = false;
++        const timeout = setTimeout(() => {
++          timedOut = true;
++          void session.abort();
++        }, timeoutFor(agentId));
++        const cancellationPoll = jobId ? setInterval(() => {
++          void getJob(user.id, jobId).then((job) => {
++            if (job?.cancelRequested) {
++              canceled = true;
++              void session.abort();
++            }
++          }).catch((error) => console.error("[eval-runner:cancel-check]", error));
++        }, 1_000) : undefined;
++        cancellationPoll?.unref();
++        const unsubscribe = session.subscribe((event) => {
++          if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
++            const delta = event.assistantMessageEvent.delta || "";
++            const remaining = Math.max(0, outputLimitPerTrial - output.length);
++            output += delta.slice(0, remaining);
++            if (delta.length > remaining) outputTruncated = true;
++          }
++          if (event.type === "tool_execution_start" && tools.length < 1_000) tools.push(event.toolName);
++        });
++        try {
++          await session.prompt(String(item.prompt));
++          if (timedOut) status = "timed_out";
++        } catch (error) {
++          if (canceled) throw new Error("评测任务已取消");
++          status = timedOut ? "timed_out" : "failed";
++          output ||= error instanceof Error ? error.message : "Agent Runner 执行失败";
++        } finally {
++          clearTimeout(timeout);
++          if (cancellationPoll) clearInterval(cancellationPoll);
++          unsubscribe();
++          session.dispose();
++        }
++        evidenceByCase[item.id].push({
++          output,
++          status,
++          tools,
++          latencyMs: Date.now() - started,
++          executedAt: new Date().toISOString(),
++          outputTruncated,
++        });
++        if (jobId && jobLeaseId) {
++          await updateEvalJobProgress(user.id, jobId, jobLeaseId, {
++            completed: completed + 1, total: totalExecutions, phase: "evaluating", currentCaseId: item.id,
++          });
++        }
++      }
++    }
++    return runEvaluation(user.id, {
++      caseIds: cases.map((item) => item.id),
++      datasetId: options.datasetId,
++      profileId: options.profileId,
++      name: options.name || "Agent Runner 回归评测",
++      jobId,
++      trialCount,
++      targetSnapshot: {
++        ...buildTargetSnapshot(state, options.agentId),
++        agentIds: [...new Set(agentIds)],
++        safeEvaluationTools: ["read", "grep", "find", "ls"],
++      },
++      evidenceByCase,
++    });
++  } finally {
++    await releaseRunnerLease(user.id, runnerLeaseId).catch((error) => {
++      console.error("[eval-runner:release-lease]", error);
++    });
++  }
++}
++
++const activeEvalWorkers = new Set<string>();
++async function processEvalJobs(ownerId: string): Promise<void> {
++  if (activeEvalWorkers.has(ownerId)) return;
++  activeEvalWorkers.add(ownerId);
++  try {
++    while (true) {
++      const job = await claimEvalJob(ownerId);
++      if (!job?.leaseId) return;
++      const leaseHeartbeat = setInterval(() => {
++        void renewEvalJobLease(ownerId, job.id, job.leaseId!, 90_000).catch((error) => {
++          console.error("[eval-job:lease-renewal]", error);
++        });
++      }, 30_000);
++      leaseHeartbeat.unref();
++      try {
++        const credential = users.findById(ownerId);
++        if (!credential) throw new Error("评测任务所属用户不存在");
++        const user: AuthUser = { id: credential.id, username: credential.username, displayName: credential.displayName };
++        const currentEvalState = await readEvalState(ownerId);
++        const previousRun = currentEvalState.runs.find((item) => item.jobId === job.id);
++        if (!job.payload?.runner && !previousRun) {
++          const selectedCount = currentEvalState.cases.filter((item) =>
++            item.enabled && (!job.payload?.datasetId || item.datasetId === job.payload.datasetId) &&
++            (!job.payload?.caseIds?.length || job.payload.caseIds.includes(item.id))
++          ).length;
++          await updateEvalJobProgress(ownerId, job.id, job.leaseId, {
++            completed: 0, total: selectedCount, phase: "evaluating",
++          });
++        }
++        const run = previousRun ?? (job.payload?.runner
++          ? await executeAgentEvaluation(user, job.payload, job.id, job.leaseId)
++          : await runEvaluation(ownerId, { ...(job.payload ?? {}), jobId: job.id }));
++        await finishEvalJob(ownerId, job.id, job.leaseId, {
++          status: "completed", runId: run.id, error: undefined,
++        });
++      } catch (error) {
++        await finishEvalJob(ownerId, job.id, job.leaseId, {
++          status: "failed",
++          runId: undefined,
++          error: error instanceof Error ? error.message : "评测任务失败",
++        });
++      } finally {
++        clearInterval(leaseHeartbeat);
++      }
++    }
++  } finally {
++    activeEvalWorkers.delete(ownerId);
++  }
++}
++
++function scheduleEvalJobs(ownerId: string): void {
++  void processEvalJobs(ownerId).catch((error) => {
++    console.error("[eval-job:worker-error]", error);
+   });
+-});
++}
++
++app.post("/api/evals/jobs", asyncRoute(async (request, response) => {
++  const ownerId = requestUser(response).id;
++  try {
++    const job = await createJob(ownerId, "评测任务", request.body ?? {});
++    response.status(202).json(job);
++    setImmediate(() => scheduleEvalJobs(ownerId));
++  } catch (error) {
++    const message = error instanceof Error ? error.message : "创建评测任务失败";
++    response.status(message.includes("过多") ? 429 : 400).json({ error: message });
++  }
++}));
++
++app.get("/api/evals/jobs/:id", asyncRoute(async (request, response) => {
++  const job = await getJob(requestUser(response).id, request.params.id);
++  response.status(job ? 200 : 404).json(job ?? { error: "评测任务不存在" });
++}));
++
++app.post("/api/evals/jobs/:id/cancel", asyncRoute(async (request, response) => {
++  const job = await getJob(requestUser(response).id, request.params.id);
++  if (!job) return response.status(404).json({ error: "评测任务不存在" });
++  response.json(await requestJobCancellation(requestUser(response).id, job.id));
++}));
++
++app.post("/api/evals/runs/:id/baseline", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  const state = await readEvalState(user.id);
++  const run = state.runs.find((item) => item.id === request.params.id);
++  if (!run) return response.status(404).json({ error: "评测运行不存在" });
++  if ((run.releaseDecision ?? run.gate).decision !== "approved") {
++    return response.status(409).json({ error: "只有 approved 的评测运行可以设为基线" });
++  }
++  const ok = await setBaseline(user.id, request.params.id, user.id);
++  response.status(ok ? 200 : 409).json(ok ? { ok } : { error: "基线状态已变化，请刷新后重试" });
++}));
++
++app.put("/api/evals/reviews/:id", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  try {
++    const review = await saveReview(user.id, request.params.id, request.body?.status, request.body?.note, user.id);
++    response.status(review ? 200 : 404).json(review ?? { error: "复核记录不存在" });
++  } catch (error) {
++    response.status(400).json({ error: error instanceof Error ? error.message : "复核参数无效" });
++  }
++}));
++
++app.get("/api/evals/runs/:id/report.md", asyncRoute(async (request, response) => {
++  const state = await readEvalState(requestUser(response).id);
++  const run = state.runs.find((item) => item.id === request.params.id);
++  if (!run) return response.status(404).json({ error: "评测运行不存在" });
++  response.type("text/markdown; charset=utf-8").send(renderRunReport(run));
++}));
++
++app.post("/api/evals/import-run/:runId", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  const observed = await getObservedRun(user.id, request.params.runId);
++  if (!observed) return response.status(404).json({ error: "观测运行不存在" });
++  const tools = observed.events
++    .filter((event) => event.type === "tool_start" && event.toolName)
++    .map((event) => event.toolName as string);
++  try {
++    const item = await createEvalCase(user.id, {
++      name: String(request.body?.name || `回归：${observed.run.prompt}`).slice(0, 120),
++      description: "从真实可观测运行导入，请复核并补充业务断言。",
++      category: "agent_task",
++      tags: ["observability-import", ...(Array.isArray(request.body?.tags) ? request.body.tags : [])],
++      datasetId: String(request.body?.datasetId || "dataset_default"),
++      severity: request.body?.severity || "medium",
++      weight: Number(request.body?.weight || 1),
++      owner: user.displayName,
++      enabled: true,
++      prompt: observed.run.prompt,
++      sourceRunId: observed.run.id,
++      sourceTargetSnapshot: observed.run.targetSnapshot,
++      evidence: {
++        output: observed.run.outputPreview,
++        status: observed.run.status,
++        tools,
++        latencyMs: observed.run.durationMs,
++      },
++      expected: { status: "succeeded", contains: [], notContains: [], requiredTools: [], forbiddenTools: [] },
++    }, user.id);
++    response.status(201).json(item);
++  } catch (error) {
++    response.status(400).json({ error: error instanceof Error ? error.message : "导入运行失败" });
++  }
++}));
++
++app.post("/api/evals/agent-runner", asyncRoute(async (request, response) => {
++  const user = requestUser(response);
++  const payload: RunEvalOptions = {
++    ...request.body,
++    caseIds: Array.isArray(request.body?.caseIds) ? request.body.caseIds.map(String) : [],
++    runner: true,
++  };
++  try {
++    const job = await createJob(user.id, "Agent Runner 评测任务", payload);
++    response.status(202).json(job);
++    setImmediate(() => scheduleEvalJobs(user.id));
++  } catch (error) {
++    const message = error instanceof Error ? error.message : "创建 Agent Runner 任务失败";
++    response.status(message.includes("过多") ? 429 : 400).json({ error: message });
++  }
++}));
+ 
+ // -----------------------------------------------------------------------------
+ // 6. Agent、Skill、Tool 管理接口
+@@ -1174,7 +1640,38 @@ app.post("/chat", async (request, response) => {
+     return response.status(500).json({ error: text });
+   }
+ 
+-  const runId = randomUUID();
++  let observedRecorder: ReturnType<typeof createRunRecorder> | undefined;
++  let observationFinished = false;
++  let observedRunId: string | undefined;
++  async function finishObservation(status: "succeeded" | "failed" | "canceled", error?: unknown): Promise<void> {
++    if (!observedRecorder || observationFinished) return;
++    // 先标记，避免观测后端失败时 finally 重复写入同一个终止事件。
++    observationFinished = true;
++    try {
++      await observedRecorder.finish(status, error);
++    } catch (finishError) {
++      console.error("[observability:finish-error]", finishError instanceof Error ? finishError.message : String(finishError));
++    }
++  }
++  try {
++    const activeAgent = getActiveAgent(state, conversation.agentId);
++    const enabledSkillIds = new Set(activeAgent?.skillIds ?? []);
++    const observedRun = await startObservedRun(user.id, {
++      conversationId,
++      agentId: conversation.agentId,
++      model: modelLabel,
++      prompt: message,
++      loadedSkills: state.skills.filter((item) => enabledSkillIds.has(item.id) && item.status === "PROD").map((item) => item.name),
++      activeTools: activeAgent?.toolNames ?? [],
++      targetSnapshot: buildTargetSnapshot(state, conversation.agentId),
++    });
++    observedRunId = observedRun.id;
++    observedRecorder = createRunRecorder(user.id, observedRun);
++  } catch (error) {
++    console.error("[observability:start-error]", error instanceof Error ? error.message : String(error));
++  }
++
++  const runId = observedRunId ?? randomUUID();
+   let clientClosed = false;
+   let assistantText = "";
+ 
+@@ -1204,6 +1701,7 @@ app.post("/chat", async (request, response) => {
+ 
+   // 必须先订阅，再调用 prompt()，否则快速返回时可能漏掉首个事件。
+   const unsubscribe = session.subscribe((event) => {
++    observedRecorder?.consumePiEvent(event);
+     // 后端单独累计完整文本，用于写入业务会话记录。
+     if (
+       event.type === "message_update" &&
+@@ -1249,7 +1747,9 @@ app.post("/chat", async (request, response) => {
+       writeSse(response, "status", { state: "idle", label: "空闲" });
+       writeSse(response, "done", { runId });
+     }
++    await finishObservation("succeeded");
+   } catch (error) {
++    await finishObservation(clientClosed ? "canceled" : "failed", error);
+     if (!clientClosed) {
+       const text = safePreview(
+         error instanceof Error ? error.message : "Agent 执行失败",
+@@ -1260,6 +1760,8 @@ app.post("/chat", async (request, response) => {
+   } finally {
+     unsubscribe();
+ 
++    await finishObservation(clientClosed ? "canceled" : "failed", "运行未正常结束");
++
+     // 无论本轮成功、失败还是取消，都以最新 AppState 保存完整 Pi entries 和叶子游标。
+     try {
+       const finalState = await readState(selectedModel, user.id);
+@@ -1291,12 +1793,36 @@ app.post("/chat", async (request, response) => {
+ // 9. 启动与退出清理
+ // -----------------------------------------------------------------------------
+ 
++app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
++  console.error("[http:unhandled-error]", error instanceof Error ? error.stack ?? error.message : String(error));
++  if (response.headersSent) return next(error);
++  response.status(500).json({ error: "服务暂时不可用，请稍后重试" });
++});
++
+ const server = app.listen(port, () => {
+   console.log(`New-Agent：http://localhost:${port}`);
++  for (const user of users.list()) scheduleEvalJobs(user.id);
++  void recoverStaleObservabilityRuns(runtimeConfig.observabilityStaleRunMs).catch((error) => {
++    console.error("[observability:recovery-error]", error);
++  });
+ });
+ 
++const evalRecoveryTimer = setInterval(() => {
++  for (const user of users.list()) scheduleEvalJobs(user.id);
++}, 15_000);
++evalRecoveryTimer.unref();
++
++const observabilityRecoveryTimer = setInterval(() => {
++  void recoverStaleObservabilityRuns(runtimeConfig.observabilityStaleRunMs).catch((error) => {
++    console.error("[observability:recovery-error]", error);
++  });
++}, 5 * 60_000);
++observabilityRecoveryTimer.unref();
++
+ function shutdown(signal: string): void {
+   console.log(`收到 ${signal}，正在释放会话资源`);
++  clearInterval(evalRecoveryTimer);
++  clearInterval(observabilityRecoveryTimer);
+   runtimeRegistry.disposeAll();
+   server.close(() => {
+     // 等连接池正常关闭后再退出，避免丢失仍在完成中的数据库操作。
+diff --git a/src/storage/mysql.ts b/src/storage/mysql.ts
+index 866c95d..d947b99 100644
+--- a/src/storage/mysql.ts
++++ b/src/storage/mysql.ts
+@@ -1,6 +1,7 @@
+ // mysql2/promise 提供 Promise 风格的连接池 API，能够直接配合 async/await。
+ // Pool 是连接池类型；RowDataPacket 用于约束 SELECT 查询返回的行。
+ import mysql, { type Pool, type RowDataPacket } from "mysql2/promise";
++import { randomUUID } from "node:crypto";
+ 
+ // Pi Session 的 entries 使用 SDK 提供的 FileEntry 类型，
+ // 从数据库恢复的数据可以直接交给 SessionManager。
+@@ -39,8 +40,13 @@ const requiredTables = [
+   "app_documents",
+   "app_states",
+   "pi_sessions",
++  "observability_runs",
++  "observability_events",
++  "observability_alerts",
+ ] as const;
+ 
++export type VersionedDocument<T> = { value: T; version: number };
++
+ /** 判断当前是否启用 MySQL；只有显式配置 file 才使用文件回退。 */
+ export function usesMysqlStorage(env: NodeJS.ProcessEnv = process.env) {
+   return env.NEW_AGENT_STORAGE?.toLowerCase() !== "file";
+@@ -119,7 +125,7 @@ export async function verifyMysqlStorage(): Promise<void> {
+ 
+     if (missingTables.length > 0) {
+       throw new Error(
+-        `数据库 ${runtimeConfig.mysql.database} 缺少课程表：${missingTables.join(", ")}。请先执行 database/001-new-agent.sql`,
++        `数据库 ${runtimeConfig.mysql.database} 缺少必需表：${missingTables.join(", ")}。请依次执行 database/001-new-agent.sql 和 database/002-observability.sql`,
+       );
+     }
+   })().catch((error) => {
+@@ -236,6 +242,249 @@ export async function readDocument<T>(key: string): Promise<T | null> {
+   return rows[0] ? parseJson<T>(rows[0].document_json) : null;
+ }
+ 
++/** 读取文档及其版本，用于跨进程乐观并发控制。 */
++export async function readVersionedDocument<T>(key: string): Promise<VersionedDocument<T> | null> {
++  await verifyMysqlStorage();
++  const [rows] = await getPool().execute<RowDataPacket[]>(
++    "SELECT document_json, version FROM app_documents WHERE document_key = ?",
++    [key],
++  );
++  return rows[0]
++    ? { value: parseJson<T>(rows[0].document_json), version: Number(rows[0].version) }
++    : null;
++}
++
++/**
++ * 仅当数据库版本仍等于 expectedVersion 时写入。返回 false 表示其他实例已经抢先修改，
++ * 调用方必须重新读取、重新执行变更，不能覆盖新数据。
++ */
++export async function compareAndSwapDocument(
++  key: string,
++  value: unknown,
++  expectedVersion: number,
++): Promise<boolean> {
++  await verifyMysqlStorage();
++  if (expectedVersion === 0) {
++    const [result] = await getPool().execute<any>(
++      `INSERT IGNORE INTO app_documents (document_key, document_json, version)
++       VALUES (?, CAST(? AS JSON), 1)`,
++      [key, JSON.stringify(value)],
++    );
++    return Number(result.affectedRows) === 1;
++  }
++  const [result] = await getPool().execute<any>(
++    `UPDATE app_documents
++     SET document_json = CAST(? AS JSON), version = version + 1
++     WHERE document_key = ? AND version = ?`,
++    [JSON.stringify(value), key, expectedVersion],
++  );
++  return Number(result.affectedRows) === 1;
++}
++
++/** MySQL 正式模式下按行保存高频观测数据，避免反复覆盖大型 JSON 文档。 */
++export async function insertObservabilityRun(
++  ownerId: string,
++  run: { id: string; startedAt: string },
++  events: Array<{ id: string; runId: string; createdAt: string }>,
++): Promise<void> {
++  await verifyMysqlStorage();
++  const connection = await getPool().getConnection();
++  try {
++    await connection.beginTransaction();
++    await connection.execute(
++      `INSERT INTO observability_runs (owner_id, run_id, started_at, run_json)
++       VALUES (?, ?, ?, CAST(? AS JSON))`,
++      [ownerId, run.id, new Date(run.startedAt), JSON.stringify(run)],
++    );
++    for (const event of events) {
++      await connection.execute(
++        `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
++         VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
++        [ownerId, event.id, event.runId, new Date(event.createdAt), JSON.stringify(event)],
++      );
++    }
++    await connection.commit();
++  } catch (error) {
++    await connection.rollback();
++    throw error;
++  } finally {
++    connection.release();
++  }
++}
++
++export async function appendObservabilityEvent(
++  ownerId: string,
++  event: { id: string; runId: string; createdAt: string },
++): Promise<void> {
++  await verifyMysqlStorage();
++  await getPool().execute(
++    `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
++     VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
++    [ownerId, event.id, event.runId, new Date(event.createdAt), JSON.stringify(event)],
++  );
++}
++
++export async function finishObservabilityRun(
++  ownerId: string,
++  run: { id: string; finishedAt?: string },
++  finalEvent: { id: string; runId: string; createdAt: string },
++  alert?: { id: string; runId: string; createdAt: string },
++): Promise<void> {
++  await verifyMysqlStorage();
++  const connection = await getPool().getConnection();
++  try {
++    await connection.beginTransaction();
++    await connection.execute(
++      `UPDATE observability_runs SET finished_at = ?, run_json = CAST(? AS JSON)
++       WHERE owner_id = ? AND run_id = ?`,
++      [run.finishedAt ? new Date(run.finishedAt) : null, JSON.stringify(run), ownerId, run.id],
++    );
++    await connection.execute(
++      `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
++       VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
++      [ownerId, finalEvent.id, finalEvent.runId, new Date(finalEvent.createdAt), JSON.stringify(finalEvent)],
++    );
++    if (alert) {
++      await connection.execute(
++        `INSERT INTO observability_alerts (owner_id, alert_id, run_id, status, created_at, alert_json)
++         VALUES (?, ?, ?, 'active', ?, CAST(? AS JSON))`,
++        [ownerId, alert.id, alert.runId, new Date(alert.createdAt), JSON.stringify(alert)],
++      );
++    }
++    await connection.commit();
++  } catch (error) {
++    await connection.rollback();
++    throw error;
++  } finally {
++    connection.release();
++  }
++}
++
++export async function readObservabilityRows(ownerId: string, limit = 500): Promise<{ runs: any[]; events: any[]; alerts: any[] }> {
++  await verifyMysqlStorage();
++  const boundedLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
++  const [runRows] = await getPool().query<RowDataPacket[]>(
++    `SELECT run_json FROM observability_runs WHERE owner_id = ? ORDER BY started_at DESC LIMIT ${boundedLimit}`,
++    [ownerId],
++  );
++  const runs = runRows.map((row) => parseJson<any>(row.run_json));
++  if (!runs.length) return { runs: [], events: [], alerts: [] };
++  const runIds = runs.map((run) => run.id);
++  const placeholders = runIds.map(() => "?").join(",");
++  const [eventRows] = await getPool().execute<RowDataPacket[]>(
++    `SELECT event_json FROM (
++       SELECT event_json, created_at, event_id FROM observability_events
++       WHERE owner_id = ? AND run_id IN (${placeholders})
++       ORDER BY created_at DESC, event_id DESC LIMIT 10000
++     ) AS recent_events
++     ORDER BY created_at ASC, event_id ASC`,
++    [ownerId, ...runIds],
++  );
++  const [alertRows] = await getPool().execute<RowDataPacket[]>(
++    `SELECT alert_json FROM observability_alerts
++     WHERE owner_id = ? AND run_id IN (${placeholders}) ORDER BY created_at DESC LIMIT 500`,
++    [ownerId, ...runIds],
++  );
++  return {
++    runs,
++    events: eventRows.map((row) => parseJson<any>(row.event_json)),
++    alerts: alertRows.map((row) => parseJson<any>(row.alert_json)),
++  };
++}
++
++export async function acknowledgeObservabilityAlert(ownerId: string, alertId: string, alert: unknown): Promise<boolean> {
++  await verifyMysqlStorage();
++  const [result] = await getPool().execute<any>(
++    `UPDATE observability_alerts SET status = 'acknowledged', alert_json = CAST(? AS JSON)
++     WHERE owner_id = ? AND alert_id = ?`,
++    [JSON.stringify(alert), ownerId, alertId],
++  );
++  return Number(result.affectedRows) === 1;
++}
++
++/** 删除超出保留上限的旧 Run；外键级联清理事件和告警。 */
++export async function pruneObservabilityRows(ownerId: string, retain = 500): Promise<number> {
++  await verifyMysqlStorage();
++  const boundedRetain = Math.max(1, Math.min(10_000, Math.floor(retain)));
++  const [result] = await getPool().execute<any>(
++    `DELETE FROM observability_runs
++     WHERE owner_id = ?
++       AND run_id NOT IN (
++         SELECT run_id FROM (
++           SELECT run_id FROM observability_runs
++           WHERE owner_id = ? ORDER BY started_at DESC LIMIT ${boundedRetain}
++         ) AS retained_runs
++       )`,
++    [ownerId, ownerId],
++  );
++  return Number(result.affectedRows);
++}
++
++/** 把进程崩溃遗留的 running Run 收敛为失败，并生成可追踪的事件和告警。 */
++export async function recoverStaleObservabilityRuns(maxAgeMs: number): Promise<number> {
++  if (!usesMysqlStorage()) return 0;
++  await verifyMysqlStorage();
++  const connection = await getPool().getConnection();
++  try {
++    await connection.beginTransaction();
++    const cutoff = new Date(Date.now() - Math.max(60_000, maxAgeMs));
++    const [rows] = await connection.execute<RowDataPacket[]>(
++      `SELECT owner_id, run_id, run_json
++       FROM observability_runs
++       WHERE finished_at IS NULL AND started_at < ?
++       ORDER BY started_at ASC LIMIT 100
++       FOR UPDATE SKIP LOCKED`,
++      [cutoff],
++    );
++    let recovered = 0;
++    for (const row of rows) {
++      const ownerId = String(row.owner_id);
++      const runId = String(row.run_id);
++      const run = parseJson<any>(row.run_json);
++      if (run.status !== "running") continue;
++      const finishedAt = new Date().toISOString();
++      run.status = "failed";
++      run.finishedAt = finishedAt;
++      run.updatedAt = finishedAt;
++      run.durationMs = Math.max(0, Date.now() - new Date(run.startedAt).getTime());
++      run.error = "服务异常退出，运行状态已由恢复任务收敛";
++      run.retryable = true;
++      const event = {
++        id: `trace_${randomUUID()}`, runId, type: "recovery", status: "failed",
++        createdAt: finishedAt, message: run.error, durationMs: run.durationMs,
++      };
++      const alert = {
++        id: `alert_${randomUUID()}`, runId, ruleName: "Agent 运行超时未收敛",
++        message: run.error, status: "active", createdAt: finishedAt,
++      };
++      const [update] = await connection.execute<any>(
++        `UPDATE observability_runs SET finished_at = ?, run_json = CAST(? AS JSON)
++         WHERE owner_id = ? AND run_id = ? AND finished_at IS NULL`,
++        [new Date(finishedAt), JSON.stringify(run), ownerId, runId],
++      );
++      if (Number(update.affectedRows) !== 1) continue;
++      await connection.execute(
++        `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
++         VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
++        [ownerId, event.id, runId, new Date(finishedAt), JSON.stringify(event)],
++      );
++      await connection.execute(
++        `INSERT INTO observability_alerts (owner_id, alert_id, run_id, status, created_at, alert_json)
++         VALUES (?, ?, ?, 'active', ?, CAST(? AS JSON))`,
++        [ownerId, alert.id, runId, new Date(finishedAt), JSON.stringify(alert)],
++      );
++      recovered += 1;
++    }
++    await connection.commit();
++    return recovered;
++  } catch (error) {
++    await connection.rollback();
++    throw error;
++  } finally {
++    connection.release();
++  }
++}
++
+ /** 新建或覆盖通用 JSON 文档，同时递增版本号。 */
+ export async function writeDocument(
+   key: string,
+diff --git a/tests/config.test.ts b/tests/config.test.ts
+new file mode 100644
+index 0000000..cd952c8
+--- /dev/null
++++ b/tests/config.test.ts
+@@ -0,0 +1,35 @@
++import assert from "node:assert/strict";
++import { spawnSync } from "node:child_process";
++import test from "node:test";
++
++function loadProductionConfig(overrides: NodeJS.ProcessEnv) {
++  return spawnSync(process.execPath, [
++    "--import", "tsx", "--input-type=module", "--eval", "await import('./src/config.ts')",
++  ], {
++    cwd: process.cwd(),
++    encoding: "utf8",
++    env: {
++      ...process.env,
++      NODE_ENV: "production",
++      NEW_AGENT_STORAGE: "mysql",
++      MYSQL_PASSWORD: "production-database-password",
++      AUTH_SECRET: "production-cookie-secret-with-more-than-32-characters",
++      AUTH_COOKIE_SECURE: "true",
++      ...overrides,
++    },
++  });
++}
++
++test("生产配置拒绝开发凭据和 file 存储", () => {
++  const unsafe = loadProductionConfig({
++    NEW_AGENT_STORAGE: "file",
++    MYSQL_PASSWORD: "",
++    AUTH_SECRET: "short",
++    AUTH_COOKIE_SECURE: "false",
++  });
++  assert.notEqual(unsafe.status, 0);
++  assert.match(unsafe.stderr, /生产配置不安全/);
++
++  const safe = loadProductionConfig({});
++  assert.equal(safe.status, 0, safe.stderr);
++});
+diff --git a/tests/eval-center.test.ts b/tests/eval-center.test.ts
+new file mode 100644
+index 0000000..2bd7487
+--- /dev/null
++++ b/tests/eval-center.test.ts
+@@ -0,0 +1,192 @@
++import assert from "node:assert/strict";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import test from "node:test";
++import { evaluateCase, validateEvalCase, type EvalCase } from "../src/evals/evaluator.ts";
++import { wilsonInterval } from "../src/evals/statistics.ts";
++
++const base = (patch: Partial<EvalCase>): EvalCase => ({
++  id: "case-1", name: "case", description: "", category: "assertion",
++  tags: [], datasetId: "dataset_default", severity: "medium", weight: 1,
++  owner: "test", enabled: true, createdAt: new Date().toISOString(),
++  updatedAt: new Date().toISOString(), ...patch,
++});
++
++test("policy、assertion、trajectory、agent_task 和 semantic_judge 可以评测", () => {
++  assert.equal(evaluateCase(base({
++    category: "policy", toolName: "write", input: { path: "demo.txt" },
++    allowedTools: ["write"], disabledSkills: [],
++    expected: { allowed: false, risk: "write", requiresApproval: true },
++  })).passed, true);
++
++  assert.equal(evaluateCase(base({
++    actual: { status: "ok", count: 3 },
++    assertions: [
++      { name: "status", path: "status", operator: "equals", expected: "ok" },
++      { name: "count", path: "count", operator: "gte", expected: 2 },
++    ],
++  })).passed, true);
++
++  assert.equal(evaluateCase(base({
++    category: "trajectory", actualTools: [{ name: "read" }, { name: "grep" }],
++    expected: { sequence: ["read", "grep"], maxCalls: 2 },
++  })).passed, true);
++
++  assert.equal(evaluateCase(base({
++    category: "agent_task", prompt: "检查项目", evidence: { output: "检查完成", status: "succeeded", tools: ["read"], latencyMs: 20 },
++    expected: { contains: ["完成"], status: "succeeded", requiredTools: ["read"], maxLatencyMs: 100 },
++  })).passed, true);
++
++  assert.equal(evaluateCase(base({
++    category: "semantic_judge", rubric: "答案必须准确、完整且安全",
++    evidence: {
++      verdict: "pass", score: 0.92, confidence: 0.88, rubricVersion: "answer-v1",
++      judgeSnapshot: { provider: "test", model: "judge-model", promptHash: "sha256:test" },
++    },
++    expected: { minScore: 0.8, minConfidence: 0.7, allowedVerdicts: ["pass"] },
++  })).passed, true);
++});
++
++test("Wilson 区间不会越界，并能表达小样本不确定性", () => {
++  const interval = wilsonInterval(1, 1);
++  assert.ok(interval);
++  assert.ok(interval.lower > 0 && interval.lower < 0.5);
++  assert.equal(interval.upper, 1);
++  assert.equal(wilsonInterval(2, 1), undefined);
++});
++
++test("非法评测用例会返回明确校验错误", () => {
++  const errors = validateEvalCase({ name: "", category: "agent_task", weight: 0 });
++  assert.ok(errors.some((item) => item.includes("名称")));
++  assert.ok(errors.some((item) => item.includes("权重")));
++  assert.ok(errors.some((item) => item.includes("prompt")));
++  const oversized = validateEvalCase(base({ category: "agent_task", prompt: "x".repeat(20_001) }));
++  assert.ok(oversized.some((item) => item.includes("20000")));
++});
++
++test("评测中心持久化用例、生成版本、识别回归并导出报告", async () => {
++  const directory = await mkdtemp(join(tmpdir(), "new-agent-evals-"));
++  const previousStorage = process.env.NEW_AGENT_STORAGE;
++  const previousDir = process.env.NEW_AGENT_DATA_DIR;
++  process.env.NEW_AGENT_STORAGE = "file";
++  process.env.NEW_AGENT_DATA_DIR = directory;
++  try {
++    const center = await import(`../src/evals/eval-center.ts?test=${Date.now()}`);
++    const owner = "owner-test";
++    const item = await center.createEvalCase(owner, {
++      name: "状态正确", description: "", category: "assertion", tags: ["core"],
++      datasetId: "dataset_default", severity: "critical", weight: 2,
++      owner: "test", enabled: true, actual: { status: "ok" },
++      assertions: [{ name: "status", path: "status", operator: "equals", expected: "ok" }],
++    }, "actor-test");
++    await center.updateGate(owner, { minTrialsPerCase: 3, minPassRate: 0, minWeightedPassRate: 0 });
++    const insufficient = await center.runEvaluation(owner, { caseIds: [item.id], trialCount: 1 });
++    assert.equal(insufficient.gate.decision, "inconclusive");
++    assert.equal(insufficient.statistics.totalTrials, 1);
++    assert.equal(await center.setBaseline(owner, insufficient.id), false);
++    await assert.rejects(center.runEvaluation(owner, { caseIds: [item.id], trialCount: 0 }), /trialCount/);
++    await center.updateGate(owner, { minTrialsPerCase: 1, minPassRate: 1, minWeightedPassRate: 1 });
++    await center.updateDatasetLifecycle(owner, "dataset_default", { status: "published" }, "actor-test");
++    const first = await center.runEvaluation(owner, { datasetId: "dataset_default" });
++    assert.equal(first.summary.passRate, 1);
++    await center.setBaseline(owner, first.id);
++    await center.updateEvalCase(owner, item.id, { actual: { status: "bad" } });
++    const second = await center.runEvaluation(owner, { datasetId: "dataset_default" });
++    assert.deepEqual(second.comparison?.regressions, [item.id]);
++    assert.equal(second.gate.decision, "blocked");
++    assert.match(center.renderRunReport(second), /发布决策：blocked/);
++    const dashboard = await center.getEvalDashboard(owner);
++    assert.equal(dashboard.summary.totalCases, 1);
++    assert.ok(dashboard.datasets[0].version >= 2);
++    assert.equal(dashboard.auditIntegrity.valid, true);
++    assert.ok(dashboard.auditIntegrity.checked >= 3);
++    const createAudit = dashboard.auditLog.find((entry: { action: string }) => entry.action === "case.created");
++    assert.equal(createAudit?.actorId, "actor-test");
++    const auditPage = await center.getEvalAudit(owner, { limit: 1 });
++    assert.equal(auditPage.auditLog.length, 1);
++    assert.ok(auditPage.pagination.total >= 3);
++    const tamperedAudit = structuredClone(dashboard.auditLog);
++    tamperedAudit[0].action = "tampered";
++    assert.equal(center.verifyEvalAuditEvents(tamperedAudit).valid, false);
++
++    const agentCase = await center.createEvalCase(owner, {
++      name: "真实执行证据隔离", description: "", category: "agent_task", tags: ["reviewable"],
++      datasetId: "dataset_default", severity: "medium", weight: 1,
++      owner: "test", enabled: true, prompt: "执行检查",
++      evidence: { output: "旧证据", status: "failed" },
++      expected: { status: "succeeded" },
++    });
++    const beforeEvidenceRun = await center.readEvalState(owner);
++    const datasetVersion = beforeEvidenceRun.datasets[0].version;
++    const profile = await center.saveProfile(owner, {
++      name: "人工复核", agentId: "agent-1", reviewRules: ["reviewable"],
++    });
++    const evidenceRun = await center.runEvaluation(owner, {
++      caseIds: [agentCase.id], profileId: profile.id,
++      evidenceByCase: { [agentCase.id]: { output: "新证据", status: "failed" } },
++    });
++    const afterEvidenceRun = await center.readEvalState(owner);
++    assert.deepEqual(afterEvidenceRun.cases.find((entry: EvalCase) => entry.id === agentCase.id)?.evidence, { output: "旧证据", status: "failed" });
++    assert.equal(afterEvidenceRun.datasets[0].version, datasetVersion);
++    const review = afterEvidenceRun.reviews.find((entry: { runId: string }) => entry.runId === evidenceRun.id);
++    assert.ok(review);
++    await center.saveReview(owner, review.id, "approved", "业务确认", "reviewer-1");
++    const afterReview = await center.readEvalState(owner);
++    assert.equal(afterReview.runs.find((entry: { id: string }) => entry.id === evidenceRun.id)?.releaseDecision?.decision, "blocked");
++
++    await center.updateGate(owner, { minPassRate: 0, minWeightedPassRate: 0, blockCritical: false });
++    const repeated = await center.runEvaluation(owner, {
++      caseIds: [agentCase.id], trialCount: 2,
++      evidenceByCase: {
++        [agentCase.id]: [
++          { output: "ok", status: "succeeded" },
++          { output: "bad", status: "failed" },
++        ],
++      },
++    });
++    assert.equal(repeated.statistics.cases[0].passAtK, true);
++    assert.equal(repeated.statistics.cases[0].passPowerK, false);
++    assert.equal(repeated.results[0].passed, false);
++    assert.equal(repeated.statistics.totalTrials, 2);
++
++    const lifecycleDataset = await center.createDataset(owner, { name: "金丝雀集", suite: "canary", owner: "qa" });
++    await center.createEvalCase(owner, {
++      name: "金丝雀断言", description: "", category: "assertion", tags: [],
++      datasetId: lifecycleDataset.id, severity: "medium", weight: 1, owner: "qa", enabled: true,
++      actual: true, assertions: [{ name: "truthy", operator: "equals", expected: true }],
++    });
++    const published = await center.updateDatasetLifecycle(owner, lifecycleDataset.id, { status: "published" }, "qa");
++    assert.equal(published?.status, "published");
++    assert.ok(published?.publishedVersion);
++    const lifecycleCase = (await center.readEvalState(owner)).cases.find((entry: EvalCase) => entry.datasetId === lifecycleDataset.id);
++    await center.updateEvalCase(owner, lifecycleCase.id, { description: "changed" });
++    const dirtied = (await center.readEvalState(owner)).datasets.find((entry: { id: string }) => entry.id === lifecycleDataset.id);
++    assert.equal(dirtied?.status, "draft");
++
++    const canceled = await center.createJob(owner, "取消任务", {});
++    await center.requestJobCancellation(owner, canceled.id);
++    const queued = await center.createJob(owner, "后续任务", {});
++    const claimed = await center.claimEvalJob(owner, 1);
++    assert.equal(claimed?.id, queued.id);
++    assert.equal(claimed?.attempts, 1);
++    await new Promise((resolve) => setTimeout(resolve, 5));
++    const reclaimed = await center.claimEvalJob(owner, 1);
++    assert.equal(reclaimed?.id, queued.id);
++    assert.equal(reclaimed?.attempts, 2);
++
++    const progressJob = await center.createJob(owner, "进度任务", {});
++    const progressClaim = await center.claimEvalJob(owner, 10_000);
++    assert.equal(progressClaim?.id, progressJob.id);
++    assert.equal(await center.updateEvalJobProgress(owner, progressJob.id, progressClaim.leaseId, {
++      completed: 2, total: 4, phase: "evaluating", currentCaseId: item.id,
++    }), true);
++    const progressed = await center.getJob(owner, progressJob.id);
++    assert.equal(progressed?.progress?.percent, 50);
++    assert.equal(progressed?.progress?.currentCaseId, item.id);
++  } finally {
++    if (previousStorage === undefined) delete process.env.NEW_AGENT_STORAGE; else process.env.NEW_AGENT_STORAGE = previousStorage;
++    if (previousDir === undefined) delete process.env.NEW_AGENT_DATA_DIR; else process.env.NEW_AGENT_DATA_DIR = previousDir;
++    await rm(directory, { recursive: true, force: true });
++  }
++});
+diff --git a/tests/observability.test.ts b/tests/observability.test.ts
+new file mode 100644
+index 0000000..af0ae51
+--- /dev/null
++++ b/tests/observability.test.ts
+@@ -0,0 +1,74 @@
++import assert from "node:assert/strict";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import test from "node:test";
++
++test("观测记录会聚合 Run、Trace、Tool 与告警", async () => {
++  const directory = await mkdtemp(join(tmpdir(), "new-agent-observe-"));
++  const previousStorage = process.env.NEW_AGENT_STORAGE;
++  const previousDir = process.env.NEW_AGENT_DATA_DIR;
++  process.env.NEW_AGENT_STORAGE = "file";
++  process.env.NEW_AGENT_DATA_DIR = directory;
++  try {
++    const observe = await import(`../src/observability/observability.ts?test=${Date.now()}`);
++    const run = await observe.startObservedRun("owner", {
++      conversationId: "conversation", agentId: "agent", model: "provider/model",
++      prompt: "读取项目", loadedSkills: [], activeTools: ["read"],
++    });
++    const recorder = observe.createRunRecorder("owner", run);
++    recorder.consumePiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "完成" } });
++    recorder.consumePiEvent({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: { path: "README.md" } });
++    recorder.consumePiEvent({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "read", result: { content: [{ type: "text", text: "ok" }] }, isError: false });
++    await recorder.finish("succeeded");
++    const dashboard = await observe.getObservability("owner");
++    assert.equal(dashboard.overview.totalRuns, 1);
++    assert.equal(dashboard.overview.successRuns, 1);
++    assert.equal(dashboard.toolStats[0].name, "read");
++    assert.ok(dashboard.events.some((event: { type: string }) => event.type === "tool_end"));
++    assert.equal(dashboard.trends.length, 1);
++    assert.equal(dashboard.trends[0].runs, 1);
++
++    const failedRun = await observe.startObservedRun("owner", {
++      conversationId: "conversation", agentId: "agent", model: "provider/model",
++      prompt: "失败任务", loadedSkills: [], activeTools: [],
++    });
++    await observe.createRunRecorder("owner", failedRun).finish("failed", "模拟失败");
++    const failedDashboard = await observe.getObservability("owner");
++    assert.equal(failedDashboard.overview.activeAlerts, 1);
++    assert.equal(failedDashboard.alerts[0].severity, "critical");
++    const firstPage = await observe.getObservability("owner", { limit: 1, offset: 0 });
++    const secondPage = await observe.getObservability("owner", { limit: 1, offset: 1 });
++    assert.equal(firstPage.pagination.total, 2);
++    assert.equal(firstPage.pagination.hasMore, true);
++    assert.equal(firstPage.runs.length, 1);
++    assert.ok(firstPage.events.every((event: { runId: string }) => event.runId === firstPage.runs[0].id));
++    assert.notEqual(firstPage.runs[0].id, secondPage.runs[0].id);
++    const failedOnly = await observe.getObservability("owner", { status: "failed" });
++    assert.equal(failedOnly.pagination.total, 1);
++    assert.equal(failedOnly.runs[0].id, failedRun.id);
++    assert.equal(await observe.acknowledgeAlert("owner", failedDashboard.alerts[0].id), true);
++    assert.equal((await observe.getObservability("owner")).overview.activeAlerts, 0);
++
++    const interruptedRun = await observe.startObservedRun("owner", {
++      conversationId: "conversation", agentId: "agent", model: "provider/model",
++      prompt: "中断任务", loadedSkills: [], activeTools: ["read"],
++    });
++    const interruptedRecorder = observe.createRunRecorder("owner", interruptedRun);
++    interruptedRecorder.consumePiEvent({ type: "tool_execution_start", toolCallId: "tool-open", toolName: "read", args: {} });
++    interruptedRecorder.consumePiEvent({
++      type: "message_end", message: { role: "assistant", usage: { input: -1, output: "not-a-number", totalTokens: Infinity, cost: -2 } },
++    });
++    await interruptedRecorder.finish("canceled", "用户中断");
++    const interruptedDashboard = await observe.getObservability("owner");
++    const storedInterruptedRun = interruptedDashboard.runs.find((item: { id: string }) => item.id === interruptedRun.id);
++    assert.equal(storedInterruptedRun.modelUsage.totalTokens, 0);
++    assert.ok(Number.isFinite(storedInterruptedRun.modelUsage.costUsd));
++    assert.ok(interruptedDashboard.events.some((event: { toolCallId?: string; status: string }) => event.toolCallId === "tool-open" && event.status === "aborted"));
++    assert.ok(interruptedDashboard.alerts.some((alert: { runId: string; message: string }) => alert.runId === interruptedRun.id && alert.message.includes("仍未完成")));
++  } finally {
++    if (previousStorage === undefined) delete process.env.NEW_AGENT_STORAGE; else process.env.NEW_AGENT_STORAGE = previousStorage;
++    if (previousDir === undefined) delete process.env.NEW_AGENT_DATA_DIR; else process.env.NEW_AGENT_DATA_DIR = previousDir;
++    await rm(directory, { recursive: true, force: true });
++  }
++});

@@ -11,6 +11,16 @@ function positiveInteger(
     return parsed;
 }
 
+// 读取允许为 0 的数值配置，例如 0 表示关闭成本告警。
+function nonNegativeNumber(value: string | undefined, fallback: number, name: string) {
+    const parsed = Number(value ?? fallback);
+    if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} 必须是非负数字`);
+    return parsed;
+}
+
+const DEFAULT_AUTH_SECRET = "new-agent-course-auth-secret-change-in-production";
+const DEFAULT_MYSQL_PASSWORD = "b2535abbc080c621a129f55ac81ba09e";
+
 export const runtimeConfig = {
     // 服务端口，如果没有配置 PORT 默认使用 3100
     port: positiveInteger(process.env.PORT, 3100, "PORT"),
@@ -39,6 +49,52 @@ export const runtimeConfig = {
         "APPROVAL_TIMEOUT_MS",
     ),
 
+    // 进程异常退出后，超过该时长仍未结束的观测 Run 会被恢复任务标记为失败。
+    observabilityStaleRunMs: positiveInteger(
+        process.env.OBSERVABILITY_STALE_RUN_MS,
+        30 * 60 * 1000,
+        "OBSERVABILITY_STALE_RUN_MS",
+    ),
+    observabilityAlertDurationMs: positiveInteger(
+        process.env.OBSERVABILITY_ALERT_DURATION_MS,
+        120_000,
+        "OBSERVABILITY_ALERT_DURATION_MS",
+    ),
+    // 设为 0 可关闭单次运行成本告警。
+    observabilityAlertCostUsd: nonNegativeNumber(
+        process.env.OBSERVABILITY_ALERT_COST_USD,
+        1,
+        "OBSERVABILITY_ALERT_COST_USD",
+    ),
+
+    // 评测资源预算，防止单次运行或证据快照无限膨胀。
+    evalMaxCasesPerRun: positiveInteger(
+        process.env.EVAL_MAX_CASES_PER_RUN,
+        200,
+        "EVAL_MAX_CASES_PER_RUN",
+    ),
+    evalMaxStoredCases: positiveInteger(
+        process.env.EVAL_MAX_STORED_CASES,
+        2_000,
+        "EVAL_MAX_STORED_CASES",
+    ),
+    evalMaxOutputChars: positiveInteger(
+        process.env.EVAL_MAX_OUTPUT_CHARS,
+        200_000,
+        "EVAL_MAX_OUTPUT_CHARS",
+    ),
+    // 限制非确定性评测的重复执行次数，避免一次请求意外放大模型成本。
+    evalMaxTrialsPerCase: positiveInteger(
+        process.env.EVAL_MAX_TRIALS_PER_CASE,
+        20,
+        "EVAL_MAX_TRIALS_PER_CASE",
+    ),
+    evalMaxEvidenceBytes: positiveInteger(
+        process.env.EVAL_MAX_EVIDENCE_BYTES,
+        16 * 1024 * 1024,
+        "EVAL_MAX_EVIDENCE_BYTES",
+    ),
+
     // mysql 配置
     storage: process.env.NEW_AGENT_STORAGE?.toLowerCase() === "file"
         ? "file"
@@ -49,7 +105,7 @@ export const runtimeConfig = {
         port: positiveInteger(process.env.MYSQL_PORT, 3306, "MYSQL_PORT"),
         database: process.env.MYSQL_DATABASE || "new_agent",
         user: process.env.MYSQL_USER || "root",
-        password: process.env.MYSQL_PASSWORD || "b2535abbc080c621a129f55ac81ba09e",
+        password: process.env.MYSQL_PASSWORD || DEFAULT_MYSQL_PASSWORD,
         connectionLimit: positiveInteger(
             process.env.MYSQL_CONNECTION_LIMIT,
             10,
@@ -64,8 +120,7 @@ export const runtimeConfig = {
 
     // 登录 cookie 的签名秘钥
     authSecret:
-        process.env.AUTH_SECRET || 
-        "new-agent-course-auth-secret-change-in-production",
+        process.env.AUTH_SECRET || DEFAULT_AUTH_SECRET,
 
     authCookieSecure:
         process.env.AUTH_COOKIE_SECURE?.toLocaleLowerCase() === "true",
@@ -77,3 +132,17 @@ export const runtimeConfig = {
         "AUTH_MAX_AGE_SECONDS",
     ),
 } as const;
+
+
+if (process.env.NODE_ENV === "production") {
+    const violations: string[] = [];
+    if (runtimeConfig.storage !== "mysql") violations.push("NEW_AGENT_STORAGE 必须为 mysql");
+    if (!process.env.MYSQL_PASSWORD || runtimeConfig.mysql.password === DEFAULT_MYSQL_PASSWORD) {
+        violations.push("必须显式配置非默认 MYSQL_PASSWORD");
+    }
+    if (!process.env.AUTH_SECRET || runtimeConfig.authSecret === DEFAULT_AUTH_SECRET || runtimeConfig.authSecret.length < 32) {
+        violations.push("必须配置至少 32 字符的非默认 AUTH_SECRET");
+    }
+    if (!runtimeConfig.authCookieSecure) violations.push("AUTH_COOKIE_SECURE 必须为 true");
+    if (violations.length) throw new Error(`生产配置不安全：${violations.join("；")}`);
+}

@@ -1,6 +1,7 @@
 // mysql2/promise 提供 Promise 风格的连接池 API，能够直接配合 async/await。
 // Pool 是连接池类型；RowDataPacket 用于约束 SELECT 查询返回的行。
 import mysql, { type Pool, type RowDataPacket } from "mysql2/promise";
+import { randomUUID } from "node:crypto";
 
 // Pi Session 的 entries 使用 SDK 提供的 FileEntry 类型，
 // 从数据库恢复的数据可以直接交给 SessionManager。
@@ -39,7 +40,12 @@ const requiredTables = [
   "app_documents",
   "app_states",
   "pi_sessions",
+  "observability_runs",
+  "observability_events",
+  "observability_alerts",
 ] as const;
+
+export type VersionedDocument<T> = { value: T; version: number };
 
 /** 判断当前是否启用 MySQL；只有显式配置 file 才使用文件回退。 */
 export function usesMysqlStorage(env: NodeJS.ProcessEnv = process.env) {
@@ -119,7 +125,7 @@ export async function verifyMysqlStorage(): Promise<void> {
 
     if (missingTables.length > 0) {
       throw new Error(
-        `数据库 ${runtimeConfig.mysql.database} 缺少课程表：${missingTables.join(", ")}。请先执行 database/001-new-agent.sql`,
+        `数据库 ${runtimeConfig.mysql.database} 缺少必需表：${missingTables.join(", ")}。请依次执行 database/001-new-agent.sql 和 database/002-observability.sql`,
       );
     }
   })().catch((error) => {
@@ -234,6 +240,249 @@ export async function readDocument<T>(key: string): Promise<T | null> {
     [key],
   );
   return rows[0] ? parseJson<T>(rows[0].document_json) : null;
+}
+
+/** 读取文档及其版本，用于跨进程乐观并发控制。 */
+export async function readVersionedDocument<T>(key: string): Promise<VersionedDocument<T> | null> {
+  await verifyMysqlStorage();
+  const [rows] = await getPool().execute<RowDataPacket[]>(
+    "SELECT document_json, version FROM app_documents WHERE document_key = ?",
+    [key],
+  );
+  return rows[0]
+    ? { value: parseJson<T>(rows[0].document_json), version: Number(rows[0].version) }
+    : null;
+}
+
+/**
+ * 仅当数据库版本仍等于 expectedVersion 时写入。返回 false 表示其他实例已经抢先修改，
+ * 调用方必须重新读取、重新执行变更，不能覆盖新数据。
+ */
+export async function compareAndSwapDocument(
+  key: string,
+  value: unknown,
+  expectedVersion: number,
+): Promise<boolean> {
+  await verifyMysqlStorage();
+  if (expectedVersion === 0) {
+    const [result] = await getPool().execute<any>(
+      `INSERT IGNORE INTO app_documents (document_key, document_json, version)
+       VALUES (?, CAST(? AS JSON), 1)`,
+      [key, JSON.stringify(value)],
+    );
+    return Number(result.affectedRows) === 1;
+  }
+  const [result] = await getPool().execute<any>(
+    `UPDATE app_documents
+     SET document_json = CAST(? AS JSON), version = version + 1
+     WHERE document_key = ? AND version = ?`,
+    [JSON.stringify(value), key, expectedVersion],
+  );
+  return Number(result.affectedRows) === 1;
+}
+
+/** MySQL 正式模式下按行保存高频观测数据，避免反复覆盖大型 JSON 文档。 */
+export async function insertObservabilityRun(
+  ownerId: string,
+  run: { id: string; startedAt: string },
+  events: Array<{ id: string; runId: string; createdAt: string }>,
+): Promise<void> {
+  await verifyMysqlStorage();
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.execute(
+      `INSERT INTO observability_runs (owner_id, run_id, started_at, run_json)
+       VALUES (?, ?, ?, CAST(? AS JSON))`,
+      [ownerId, run.id, new Date(run.startedAt), JSON.stringify(run)],
+    );
+    for (const event of events) {
+      await connection.execute(
+        `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
+         VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
+        [ownerId, event.id, event.runId, new Date(event.createdAt), JSON.stringify(event)],
+      );
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function appendObservabilityEvent(
+  ownerId: string,
+  event: { id: string; runId: string; createdAt: string },
+): Promise<void> {
+  await verifyMysqlStorage();
+  await getPool().execute(
+    `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
+     VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
+    [ownerId, event.id, event.runId, new Date(event.createdAt), JSON.stringify(event)],
+  );
+}
+
+export async function finishObservabilityRun(
+  ownerId: string,
+  run: { id: string; finishedAt?: string },
+  finalEvent: { id: string; runId: string; createdAt: string },
+  alert?: { id: string; runId: string; createdAt: string },
+): Promise<void> {
+  await verifyMysqlStorage();
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.execute(
+      `UPDATE observability_runs SET finished_at = ?, run_json = CAST(? AS JSON)
+       WHERE owner_id = ? AND run_id = ?`,
+      [run.finishedAt ? new Date(run.finishedAt) : null, JSON.stringify(run), ownerId, run.id],
+    );
+    await connection.execute(
+      `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
+       VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
+      [ownerId, finalEvent.id, finalEvent.runId, new Date(finalEvent.createdAt), JSON.stringify(finalEvent)],
+    );
+    if (alert) {
+      await connection.execute(
+        `INSERT INTO observability_alerts (owner_id, alert_id, run_id, status, created_at, alert_json)
+         VALUES (?, ?, ?, 'active', ?, CAST(? AS JSON))`,
+        [ownerId, alert.id, alert.runId, new Date(alert.createdAt), JSON.stringify(alert)],
+      );
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function readObservabilityRows(ownerId: string, limit = 500): Promise<{ runs: any[]; events: any[]; alerts: any[] }> {
+  await verifyMysqlStorage();
+  const boundedLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
+  const [runRows] = await getPool().query<RowDataPacket[]>(
+    `SELECT run_json FROM observability_runs WHERE owner_id = ? ORDER BY started_at DESC LIMIT ${boundedLimit}`,
+    [ownerId],
+  );
+  const runs = runRows.map((row) => parseJson<any>(row.run_json));
+  if (!runs.length) return { runs: [], events: [], alerts: [] };
+  const runIds = runs.map((run) => run.id);
+  const placeholders = runIds.map(() => "?").join(",");
+  const [eventRows] = await getPool().execute<RowDataPacket[]>(
+    `SELECT event_json FROM (
+       SELECT event_json, created_at, event_id FROM observability_events
+       WHERE owner_id = ? AND run_id IN (${placeholders})
+       ORDER BY created_at DESC, event_id DESC LIMIT 10000
+     ) AS recent_events
+     ORDER BY created_at ASC, event_id ASC`,
+    [ownerId, ...runIds],
+  );
+  const [alertRows] = await getPool().execute<RowDataPacket[]>(
+    `SELECT alert_json FROM observability_alerts
+     WHERE owner_id = ? AND run_id IN (${placeholders}) ORDER BY created_at DESC LIMIT 500`,
+    [ownerId, ...runIds],
+  );
+  return {
+    runs,
+    events: eventRows.map((row) => parseJson<any>(row.event_json)),
+    alerts: alertRows.map((row) => parseJson<any>(row.alert_json)),
+  };
+}
+
+export async function acknowledgeObservabilityAlert(ownerId: string, alertId: string, alert: unknown): Promise<boolean> {
+  await verifyMysqlStorage();
+  const [result] = await getPool().execute<any>(
+    `UPDATE observability_alerts SET status = 'acknowledged', alert_json = CAST(? AS JSON)
+     WHERE owner_id = ? AND alert_id = ?`,
+    [JSON.stringify(alert), ownerId, alertId],
+  );
+  return Number(result.affectedRows) === 1;
+}
+
+/** 删除超出保留上限的旧 Run；外键级联清理事件和告警。 */
+export async function pruneObservabilityRows(ownerId: string, retain = 500): Promise<number> {
+  await verifyMysqlStorage();
+  const boundedRetain = Math.max(1, Math.min(10_000, Math.floor(retain)));
+  const [result] = await getPool().execute<any>(
+    `DELETE FROM observability_runs
+     WHERE owner_id = ?
+       AND run_id NOT IN (
+         SELECT run_id FROM (
+           SELECT run_id FROM observability_runs
+           WHERE owner_id = ? ORDER BY started_at DESC LIMIT ${boundedRetain}
+         ) AS retained_runs
+       )`,
+    [ownerId, ownerId],
+  );
+  return Number(result.affectedRows);
+}
+
+/** 把进程崩溃遗留的 running Run 收敛为失败，并生成可追踪的事件和告警。 */
+export async function recoverStaleObservabilityRuns(maxAgeMs: number): Promise<number> {
+  if (!usesMysqlStorage()) return 0;
+  await verifyMysqlStorage();
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const cutoff = new Date(Date.now() - Math.max(60_000, maxAgeMs));
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      `SELECT owner_id, run_id, run_json
+       FROM observability_runs
+       WHERE finished_at IS NULL AND started_at < ?
+       ORDER BY started_at ASC LIMIT 100
+       FOR UPDATE SKIP LOCKED`,
+      [cutoff],
+    );
+    let recovered = 0;
+    for (const row of rows) {
+      const ownerId = String(row.owner_id);
+      const runId = String(row.run_id);
+      const run = parseJson<any>(row.run_json);
+      if (run.status !== "running") continue;
+      const finishedAt = new Date().toISOString();
+      run.status = "failed";
+      run.finishedAt = finishedAt;
+      run.updatedAt = finishedAt;
+      run.durationMs = Math.max(0, Date.now() - new Date(run.startedAt).getTime());
+      run.error = "服务异常退出，运行状态已由恢复任务收敛";
+      run.retryable = true;
+      const event = {
+        id: `trace_${randomUUID()}`, runId, type: "recovery", status: "failed",
+        createdAt: finishedAt, message: run.error, durationMs: run.durationMs,
+      };
+      const alert = {
+        id: `alert_${randomUUID()}`, runId, ruleName: "Agent 运行超时未收敛",
+        message: run.error, status: "active", createdAt: finishedAt,
+      };
+      const [update] = await connection.execute<any>(
+        `UPDATE observability_runs SET finished_at = ?, run_json = CAST(? AS JSON)
+         WHERE owner_id = ? AND run_id = ? AND finished_at IS NULL`,
+        [new Date(finishedAt), JSON.stringify(run), ownerId, runId],
+      );
+      if (Number(update.affectedRows) !== 1) continue;
+      await connection.execute(
+        `INSERT INTO observability_events (owner_id, event_id, run_id, created_at, event_json)
+         VALUES (?, ?, ?, ?, CAST(? AS JSON))`,
+        [ownerId, event.id, runId, new Date(finishedAt), JSON.stringify(event)],
+      );
+      await connection.execute(
+        `INSERT INTO observability_alerts (owner_id, alert_id, run_id, status, created_at, alert_json)
+         VALUES (?, ?, ?, 'active', ?, CAST(? AS JSON))`,
+        [ownerId, alert.id, runId, new Date(finishedAt), JSON.stringify(alert)],
+      );
+      recovered += 1;
+    }
+    await connection.commit();
+    return recovered;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 /** 新建或覆盖通用 JSON 文档，同时递增版本号。 */

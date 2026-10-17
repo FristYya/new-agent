@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1800" viewBox="0 0 1800 1800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffaf0"/>
+      <stop offset="0.52" stop-color="#f8fcff"/>
+      <stop offset="1" stop-color="#edf7ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#9bb6c8" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ebccd"/>
+    </marker>
+    <style>
+      .title { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 58px; font-weight: 700; fill: #36546b; letter-spacing: 2px; }
+      .card-title { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 30px; font-weight: 650; fill: #36546b; }
+      .body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 23px; font-weight: 430; fill: #526f82; letter-spacing: .3px; }
+      .icon { fill: none; stroke: #5f8ba3; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow { fill: none; stroke: #9ebccd; stroke-width: 4; stroke-linecap: round; marker-end: url(#arrow); }
+      .feedback { fill: none; stroke: #b9a4d9; stroke-width: 3.5; stroke-dasharray: 8 9; stroke-linecap: round; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1800" fill="url(#bg)"/>
+  <circle cx="120" cy="115" r="80" fill="#dff2ff" opacity="0.45"/>
+  <circle cx="1690" cy="130" r="105" fill="#e7f8ef" opacity="0.42"/>
+  <text x="900" y="105" text-anchor="middle" class="title">生产级 Agent 可观测与可评测体系</text>
+
+  <!-- soft vertical flow arrows -->
+  <path class="arrow" d="M340 398 L340 438"/>
+  <path class="arrow" d="M900 398 L900 438"/>
+  <path class="arrow" d="M1460 398 L1460 438"/>
+  <path class="arrow" d="M340 688 L340 728"/>
+  <path class="arrow" d="M900 688 L900 728"/>
+  <path class="arrow" d="M1460 688 L1460 728"/>
+  <path class="arrow" d="M340 978 L340 1018"/>
+  <path class="arrow" d="M900 978 L900 1018"/>
+  <path class="arrow" d="M1460 978 L1460 1018"/>
+
+  <!-- reusable card pattern: outer pastel card + white content surface -->
+  <g transform="translate(90 150)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#dff2ff" stroke="#c7e4f4" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(45 44)"><rect x="3" y="7" width="38" height="30" rx="8"/><path d="M13 7V2M31 7V2M14 21h.1M30 21h.1M13 31h18"/></g>
+    <text x="122" y="76" class="card-title">Agent Runtime</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• Run / Span / Event</text><text x="55" y="184" class="body">• 会话与长期任务</text><text x="55" y="217" class="body">• 状态与版本快照</text>
+  </g>
+  <g transform="translate(650 150)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#e1f7ed" stroke="#c7eadb" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(44 43)"><path d="M23 2v43M23 8C13 1 4 8 7 18c-8 7-2 19 8 16M23 8c10-7 19 0 16 10 8 7 2 19-8 16M14 14l9 7 9-7M14 31l9-6 9 6"/></g>
+    <text x="122" y="76" class="card-title">模型与上下文</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• Prompt 与响应</text><text x="55" y="184" class="body">• Token / 延迟 / 成本</text><text x="55" y="217" class="body">• 模型与参数版本</text>
+  </g>
+  <g transform="translate(1210 150)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#fff0d9" stroke="#f5ddba" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 42)"><path d="M31 4a12 12 0 0 0-11 17L5 36l8 8 15-15A12 12 0 0 0 44 15l-9 9-8-8 9-9A12 12 0 0 0 31 4z"/></g>
+    <text x="122" y="76" class="card-title">Tool Gateway</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• 工具调用轨迹</text><text x="55" y="184" class="body">• 超时 / 重试 / 错误</text><text x="55" y="217" class="body">• 外部依赖状态</text>
+  </g>
+
+  <g transform="translate(90 440)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#eee6fb" stroke="#dccff2" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 43)"><path d="M3 27h7l5-15 8 30 7-24 5 9h10M5 8h8M35 8h8"/></g>
+    <text x="122" y="76" class="card-title">遥测流水线</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• Metrics / Logs / Traces</text><text x="55" y="184" class="body">• 采样 / 脱敏 / 聚合</text><text x="55" y="217" class="body">• 背压与降级保护</text>
+  </g>
+  <g transform="translate(650 440)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#dff4ff" stroke="#c9e6f3" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 42)"><circle cx="24" cy="24" r="20"/><circle cx="24" cy="24" r="10"/><path d="M24 4V0M44 24h4M24 44v4M4 24H0M16 24l6 6 12-15"/></g>
+    <text x="122" y="76" class="card-title">质量引擎</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• 规则与语义评分</text><text x="55" y="184" class="body">• Agent Runner 回放</text><text x="55" y="217" class="body">• 人工复核校准</text>
+  </g>
+  <g transform="translate(1210 440)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#dff2ff" stroke="#c7e4f4" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 43)"><path d="M17 31l-5 5a9 9 0 0 1-13-13l10-10a9 9 0 0 1 13 0M31 17l5-5a9 9 0 0 1 13 13L39 35a9 9 0 0 1-13 0M15 25h18"/></g>
+    <text x="122" y="76" class="card-title">上下文关联</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• traceId 全链路传播</text><text x="55" y="184" class="body">• 用户 / 租户 / 会话</text><text x="55" y="217" class="body">• 目标与证据快照</text>
+  </g>
+
+  <g transform="translate(90 730)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#e1f7ed" stroke="#c7eadb" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 42)"><ellipse cx="24" cy="9" rx="20" ry="8"/><path d="M4 9v28c0 5 9 8 20 8s20-3 20-8V9M4 23c0 5 9 8 20 8s20-3 20-8"/></g>
+    <text x="122" y="76" class="card-title">可观测数据</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• Run / Event / Alert</text><text x="55" y="184" class="body">• 指标时序与检索</text><text x="55" y="217" class="body">• 冷热分层与保留</text>
+  </g>
+  <g transform="translate(650 730)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#fff0d9" stroke="#f5ddba" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 42)"><path d="M10 3h28v42H10zM16 13h16M16 21h16M16 29h9M32 33l4 4 8-10"/></g>
+    <text x="122" y="76" class="card-title">评测资产</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• Case / Dataset / Baseline</text><text x="55" y="184" class="body">• Profile 与版本</text><text x="55" y="217" class="body">• 事故样本沉淀</text>
+  </g>
+  <g transform="translate(1210 730)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#eee6fb" stroke="#dccff2" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 41)"><path d="M24 2l19 8v13c0 13-8 21-19 25C13 44 5 36 5 23V10zM15 24l6 6 12-14"/></g>
+    <text x="122" y="76" class="card-title">治理与审计</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• RBAC 与租户隔离</text><text x="55" y="184" class="body">• 敏感数据策略</text><text x="55" y="217" class="body">• 不可抵赖审计</text>
+  </g>
+
+  <g transform="translate(90 1020)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#dff4ff" stroke="#c9e6f3" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 42)"><path d="M4 39h40M8 34V18h8v16M21 34V8h8v26M34 34V23h8v11M35 8l5 5M40 8l-8 8"/></g>
+    <text x="122" y="76" class="card-title">SLO 运营</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• 看板与燃尽率告警</text><text x="55" y="184" class="body">• 错误预算与值班</text><text x="55" y="217" class="body">• 定位 / 止损 / 复盘</text>
+  </g>
+  <g transform="translate(650 1020)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#dff2ff" stroke="#c7e4f4" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 42)"><path d="M4 39l11-12 9 7 18-23M33 11h9v9M4 8v31h42"/></g>
+    <text x="122" y="76" class="card-title">质量回归</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• 成功率与退化趋势</text><text x="55" y="184" class="body">• 成本 / 性能 / 质量</text><text x="55" y="217" class="body">• 线上线下一致性</text>
+  </g>
+  <g transform="translate(1210 1020)" filter="url(#shadow)">
+    <rect width="500" height="248" rx="30" fill="#e1f7ed" stroke="#c7eadb" stroke-width="2"/>
+    <circle cx="67" cy="66" r="38" fill="#ffffff" opacity=".9"/>
+    <g class="icon" transform="translate(43 42)"><path d="M8 45V4M40 45V4M8 12h32M8 37h32M18 12v25M30 12v25M3 24h42"/></g>
+    <text x="122" y="76" class="card-title">发布控制</text>
+    <rect x="28" y="112" width="444" height="112" rx="20" fill="#ffffff" opacity=".94"/>
+    <text x="55" y="151" class="body">• CI 硬门禁与软门禁</text><text x="55" y="184" class="body">• 灰度 / 影子 / 对照</text><text x="55" y="217" class="body">• 自动阻断与回滚</text>
+  </g>
+
+  <!-- quality feedback loops -->
+  <path class="feedback" d="M900 1278 C900 1342 625 1340 625 875 C625 825 646 808 682 808"/>
+  <path class="feedback" d="M1715 1144 C1772 1144 1775 278 1708 278"/>
+</svg>
