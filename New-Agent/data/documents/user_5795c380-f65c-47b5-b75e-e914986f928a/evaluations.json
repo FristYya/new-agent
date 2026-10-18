@@ -1,0 +1,31 @@
+{
+  "cases": [],
+  "datasets": [
+    {
+      "id": "dataset_default",
+      "name": "默认回归集",
+      "suite": "regression",
+      "status": "published",
+      "owner": "system",
+      "version": 0,
+      "versions": [],
+      "publishedAt": "2026-10-17T14:05:36.395Z",
+      "createdAt": "2026-10-17T14:05:36.395Z",
+      "updatedAt": "2026-10-17T14:05:36.395Z"
+    }
+  ],
+  "profiles": [],
+  "runs": [],
+  "reviews": [],
+  "jobs": [],
+  "auditLog": [],
+  "gate": {
+    "minPassRate": 1,
+    "minWeightedPassRate": 1,
+    "maxRegressions": 0,
+    "blockCritical": true,
+    "requirePublishedDataset": true,
+    "minTrialsPerCase": 1,
+    "minConfidenceLowerBound": 0
+  }
+}

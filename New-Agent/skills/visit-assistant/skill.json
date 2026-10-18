@@ -1,0 +1,6 @@
+{
+  "name": "visit-assistant",
+  "label": "拜访智能助手",
+  "description": "AI 拜访总控 Skill，覆盖待办查询、创建/修改/取消拜访计划、签到、签退、录音和填写拜访日志。",
+  "entryFile": "SKILL.md"
+}

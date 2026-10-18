@@ -24,6 +24,13 @@ const DEFAULT_MYSQL_PASSWORD = "b2535abbc080c621a129f55ac81ba09e";
 export const runtimeConfig = {
     // 服务端口，如果没有配置 PORT 默认使用 3100
     port: positiveInteger(process.env.PORT, 3100, "PORT"),
+    // 拜访业务由独立 Spring Boot 服务承载，New-Agent 只做同源认证代理。
+    visitApiBaseUrl: process.env.VISIT_API_BASE_URL?.trim() || "http://127.0.0.1:8080",
+    visitApiTimeoutMs: positiveInteger(
+        process.env.VISIT_API_TIMEOUT_MS,
+        10_000,
+        "VISIT_API_TIMEOUT_MS",
+    ),
     // 单次 SKILL TOOL 最长的执行时间
     skillTimeoutMs: positiveInteger(
         process.env.SKILL_TIMEOUT_MS,

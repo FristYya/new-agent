@@ -1,0 +1,3235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>拜访智能助手</title>
+  <style>
+    :root {
+      --bg: #f3f5f2;
+      --ink: #15211d;
+      --muted: #738179;
+      --line: #d9e0dc;
+      --card: #fffffb;
+      --soft: #ecf1ed;
+      --accent: #29594a;
+      --accent-weak: #dce8e2;
+      --gold: #a17235;
+      --danger: #b45a4c;
+      --shadow: 0 18px 50px rgb(34 48 42 / 13%);
+      font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 8%, rgb(41 89 74 / 12%), transparent 28%),
+        linear-gradient(145deg, #fbfcf8 0%, #e9eee9 100%);
+      overflow: hidden;
+    }
+    button, input, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .page {
+      height: 100dvh;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+    }
+    .phone {
+      width: min(430px, 100%);
+      height: min(860px, 100dvh - 36px);
+      background: var(--bg);
+      border: 1px solid rgb(20 33 29 / 10%);
+      border-radius: 30px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      position: relative;
+    }
+    .top {
+      padding: max(14px, env(safe-area-inset-top)) 16px 12px;
+      background: rgb(255 255 251 / 88%);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(18px);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .back {
+      width: 34px;
+      height: 34px;
+      border: 0;
+      border-radius: 50%;
+      background: var(--soft);
+      color: var(--accent);
+      font-size: 22px;
+      line-height: 1;
+    }
+    .logo {
+      width: 38px;
+      height: 38px;
+      border-radius: 11px;
+      background: linear-gradient(135deg, #183c34, #6c856f 62%, #c6a56d);
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+    .title {
+      min-width: 0;
+      flex: 1;
+    }
+    .title b { display: block; font-size: 17px; line-height: 1.15; }
+    .title span {
+      color: var(--muted);
+      display: block;
+      font-size: 12px;
+      margin-top: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status {
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--muted);
+      padding: 6px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .icon-btn {
+      min-width: 34px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--card);
+      color: var(--accent);
+      font-size: 18px;
+      line-height: 1;
+      display: grid;
+      place-items: center;
+      box-shadow: 0 5px 14px rgb(34 48 42 / 6%);
+    }
+    .history-panel {
+      position: absolute;
+      inset: auto 10px 78px 10px;
+      max-height: min(420px, 62dvh);
+      border: 1px solid rgb(21 33 29 / 10%);
+      border-radius: 18px;
+      background: rgb(255 255 251 / 98%);
+      box-shadow: 0 18px 48px rgb(34 48 42 / 18%);
+      z-index: 10;
+      overflow: hidden;
+      display: none;
+    }
+    .history-panel.open {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .history-panel-head {
+      padding: 14px 14px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .history-panel-head b {
+      font-size: 15px;
+      line-height: 1.3;
+    }
+    .history-panel-head button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1;
+    }
+    .history-list {
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 1px;
+      background: var(--line);
+    }
+    .visit-history-item {
+      border: 0;
+      background: var(--card);
+      color: var(--ink);
+      padding: 12px 14px;
+      text-align: left;
+      display: grid;
+      gap: 5px;
+    }
+    .visit-history-item b {
+      font-size: 14px;
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .visit-history-item span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .visit-history-item.active {
+      background: #eef7f1;
+      color: var(--accent);
+    }
+    .history-empty {
+      background: var(--card);
+      color: var(--muted);
+      padding: 18px 14px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .stream {
+      overflow: auto;
+      min-height: 0;
+      padding: 18px 14px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      scroll-behavior: auto;
+    }
+    .hero {
+      margin: 10px 4px 4px;
+      display: grid;
+      gap: 12px;
+      flex: 0 0 auto;
+    }
+    .hero h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .quick-row {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 2px 0 8px;
+    }
+    .quick {
+      flex: 0 0 auto;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 9px 12px;
+      font-size: 13px;
+      box-shadow: 0 6px 16px rgb(34 48 42 / 6%);
+    }
+    .quick.primary {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .msg {
+      max-width: 88%;
+      display: grid;
+      gap: 6px;
+      flex: 0 0 auto;
+      animation: rise .22s ease-out;
+    }
+    .msg.user { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; }
+    .bubble {
+      border: 1px solid var(--line);
+      background: var(--card);
+      border-radius: 18px 18px 18px 6px;
+      padding: 11px 13px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      font-size: 14px;
+      box-shadow: 0 8px 22px rgb(34 48 42 / 7%);
+    }
+    .user .bubble {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+      border-radius: 18px 18px 6px 18px;
+    }
+    .card {
+      width: 100%;
+      max-width: 390px;
+      flex: 0 0 auto;
+      align-self: flex-start;
+      border: 1px solid rgb(21 33 29 / 8%);
+      border-radius: 16px;
+      background: var(--card);
+      box-shadow: 0 10px 26px rgb(34 48 42 / 8%);
+      overflow: hidden;
+      animation: rise .22s ease-out;
+    }
+    .analysis-row {
+      width: 100%;
+      max-width: 390px;
+      flex: 0 0 auto;
+      align-self: flex-start;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 2px 0;
+      color: #242424;
+      font-size: 16px;
+      line-height: 24px;
+      animation: rise .22s ease-out;
+    }
+    .analysis-row span {
+      color: #8f8f8f;
+      font-weight: 400;
+    }
+    .analysis-row b {
+      font-weight: 700;
+    }
+    .analysis-row i {
+      margin-left: 4px;
+      color: #777;
+      font-style: normal;
+      font-size: 22px;
+      line-height: 1;
+    }
+    .plan-card {
+      border: 0;
+      border-radius: 24px;
+      background: rgba(255, 255, 255, .96);
+      box-shadow: 0 10px 30px rgb(32 39 34 / 7%);
+    }
+    .plan-card .card-body {
+      height: auto;
+      min-height: 0;
+      padding: 0;
+      overflow: visible;
+    }
+    .plan-form-card {
+      height: auto;
+      min-height: 0;
+      display: block;
+    }
+    .plan-form-scroll {
+      height: auto;
+      min-height: 0;
+      display: grid;
+      gap: 26px;
+      overflow: visible;
+      padding: 26px 18px 20px;
+    }
+    .plan-form-footer {
+      display: grid;
+      gap: 14px;
+      padding: 4px 0 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .plan-form-title {
+      display: grid;
+      gap: 18px;
+    }
+    .plan-form-title h2 {
+      margin: 0;
+      color: #101010;
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.28;
+      letter-spacing: 0;
+    }
+    .plan-form-title p {
+      margin: 0;
+      color: #222;
+      font-size: 16px;
+      line-height: 1.65;
+    }
+    .plan-field-group {
+      display: grid;
+      gap: 14px;
+    }
+    .plan-label {
+      color: #111;
+      font-size: 19px;
+      font-weight: 800;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .pill-option {
+      min-height: 44px;
+      border: 0;
+      border-radius: 999px;
+      background: #f5f5f5;
+      color: #333;
+      padding: 9px 14px;
+      font-size: 17px;
+      line-height: 24px;
+      white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .pill-option.active {
+      background: #e8f0eb;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .select-shell {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      min-height: 54px;
+      border: 1px solid #dedede;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, .92);
+      padding: 0 12px;
+    }
+    .select-shell input {
+      width: 100%;
+      min-width: 0;
+      height: 52px;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: #1f1f1f;
+      font-size: 17px;
+      line-height: 24px;
+    }
+    .select-shell input[type="datetime-local"] {
+      color: #1f1f1f;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .select-shell input[type="datetime-local"]:invalid {
+      color: #b8b8b8;
+    }
+    .select-shell input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+      position: absolute;
+      inset: 0;
+      width: auto;
+      height: auto;
+      opacity: 0;
+      cursor: pointer;
+    }
+    .select-shell input::placeholder {
+      color: #b8b8b8;
+    }
+    .select-icon {
+      width: 28px;
+      color: #777;
+      text-align: center;
+      font-size: 24px;
+      line-height: 1;
+      pointer-events: none;
+    }
+    .inline-picker {
+      display: none;
+      gap: 8px;
+      margin-top: 2px;
+    }
+    .inline-picker.open {
+      display: grid;
+    }
+    .purpose-picker {
+      grid-template-columns: minmax(110px, .46fr) minmax(0, 1fr);
+      gap: 0;
+      max-height: 320px;
+      overflow: hidden;
+      border: 1px solid #dedede;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .96);
+      box-shadow: 0 8px 18px rgb(34 48 42 / 8%);
+    }
+    .purpose-picker.open {
+      display: grid;
+    }
+    .purpose-left,
+    .purpose-right {
+      display: grid;
+      align-content: start;
+      max-height: 320px;
+      overflow: auto;
+    }
+    .purpose-left {
+      border-right: 1px solid #e4e4e4;
+      background: #fafafa;
+    }
+    .purpose-tab,
+    .purpose-choice {
+      min-height: 54px;
+      border: 0;
+      background: transparent;
+      color: #5f5f5f;
+      text-align: left;
+      font-size: 17px;
+      line-height: 1.35;
+      padding: 12px 14px;
+    }
+    .purpose-tab {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+    }
+    .purpose-tab.active,
+    .purpose-choice:hover,
+    .purpose-choice.active {
+      color: #202020;
+      font-weight: 700;
+      background: #fff;
+    }
+    .purpose-tab .check,
+    .purpose-choice .check {
+      color: #202020;
+      font-size: 20px;
+      line-height: 1;
+    }
+    .purpose-tab .chevron {
+      color: #777;
+      font-size: 22px;
+      line-height: 1;
+    }
+    .suggestion-picker {
+      display: none;
+      gap: 8px;
+      margin-top: 2px;
+    }
+    .suggestion-picker.open {
+      display: grid;
+    }
+    .picker-option {
+      border: 1px solid rgb(21 33 29 / 8%);
+      border-radius: 14px;
+      background: #fff;
+      color: var(--ink);
+      padding: 12px;
+      text-align: left;
+      display: grid;
+      gap: 4px;
+      box-shadow: 0 6px 16px rgb(34 48 42 / 5%);
+    }
+    .picker-option strong {
+      font-size: 14px;
+      line-height: 1.35;
+    }
+    .picker-option span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .picker-option:hover,
+    .picker-option.active {
+      border-color: var(--accent);
+      background: #f7fbf8;
+    }
+    .picker-empty {
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .create-plan-btn {
+      width: 100%;
+      min-height: 56px;
+      border: 0;
+      border-radius: 999px;
+      background: #d8d8d8;
+      color: #fff;
+      font-size: 17px;
+      font-weight: 700;
+    }
+    .create-plan-btn:disabled {
+      opacity: 1;
+      cursor: not-allowed;
+    }
+    .create-plan-btn.ready {
+      background: var(--accent);
+      cursor: pointer;
+    }
+    .plan-form-card [data-travel-field] {
+      display: none;
+    }
+    .plan-form-card[data-visit-type="travel"] [data-travel-field] {
+      display: grid;
+    }
+    .plan-form-card [data-customer-type-field],
+    .plan-form-card [data-business-license-field],
+    .plan-form-card [data-store-field],
+    .plan-form-card [data-target-field] {
+      display: none;
+    }
+    .plan-form-card[data-object-type="ad_customer"] [data-customer-type-field],
+    .plan-form-card[data-object-type="store"] [data-customer-type-field],
+    .plan-form-card[data-object-type="ad_customer"] [data-business-license-field],
+    .plan-form-card[data-object-type="agent"] [data-business-license-field],
+    .plan-form-card[data-object-type="provider"] [data-business-license-field],
+    .plan-form-card[data-object-type="store"] [data-store-field],
+    .plan-form-card[data-object-type="ad_customer"][data-customer-type="new"] [data-target-field] {
+      display: grid;
+    }
+    .feedback-row {
+      display: flex;
+      gap: 14px;
+      color: #a9a9a9;
+      font-size: 20px;
+    }
+    .card-head {
+      padding: 16px 16px 12px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8faf7 100%);
+    }
+    .card-title {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+    .card-title b {
+      font-size: 16px;
+      line-height: 1.35;
+    }
+    .card-title span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .badge {
+      border: 1px solid var(--accent-weak);
+      color: var(--accent);
+      background: #eef7f1;
+      border-radius: 999px;
+      padding: 5px 8px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .card-body {
+      padding: 0 16px 16px;
+      display: grid;
+      gap: 14px;
+    }
+    .section {
+      display: grid;
+      gap: 10px;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+    }
+    .section:first-child { border-top: 0; padding-top: 0; }
+    .section-title {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 750;
+      line-height: 1;
+    }
+    .form-grid { display: grid; gap: 8px; }
+    .field {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .field input, .field select {
+      min-height: 40px;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--ink);
+      padding: 9px 11px;
+      outline: none;
+    }
+    .field input:focus, .field select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgb(41 89 74 / 12%);
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+    .candidate-list { display: grid; gap: 9px; }
+    .candidate {
+      position: relative;
+      border: 1px solid rgb(21 33 29 / 8%);
+      border-radius: 14px;
+      background: #fff;
+      padding: 12px 34px 12px 12px;
+      text-align: left;
+      display: grid;
+      gap: 4px;
+      color: var(--ink);
+      box-shadow: 0 6px 16px rgb(34 48 42 / 5%);
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+    .candidate::after {
+      content: "›";
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      color: var(--muted);
+      font-size: 20px;
+      transform: translateY(-50%);
+    }
+    .candidate:hover {
+      border-color: var(--accent);
+      background: #f8fbf8;
+      transform: translateY(-1px);
+    }
+    .candidate b { font-size: 13px; }
+    .candidate span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .candidate-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 2px;
+    }
+    .mini-chip {
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--accent);
+      padding: 3px 7px;
+      font-size: 10px;
+      font-style: normal;
+      line-height: 1.2;
+    }
+    .summary-hero {
+      display: grid;
+      gap: 6px;
+      padding: 13px 14px;
+      border-radius: 14px;
+      background: #f5f8f5;
+      border: 1px solid var(--accent-weak);
+    }
+    .summary-hero small {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .summary-hero b {
+      font-size: 16px;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+	    .summary-grid {
+      display: grid;
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--line);
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 84px minmax(0, 1fr);
+      gap: 10px;
+      background: #fff;
+      padding: 10px 11px;
+      font-size: 13px;
+      align-items: start;
+    }
+    .kv span { color: var(--muted); }
+	    .kv b {
+	      color: var(--ink);
+	      font-weight: 650;
+	      overflow-wrap: anywhere;
+	    }
+	    .checkin-hero {
+	      display: grid;
+	      gap: 10px;
+	      padding: 14px;
+	      border-radius: 16px;
+	      background: linear-gradient(135deg, #f6f9f5, #ffffff);
+	      border: 1px solid var(--accent-weak);
+	    }
+	    .checkin-hero small {
+	      color: var(--muted);
+	      font-size: 12px;
+	      line-height: 1.4;
+	    }
+	    .checkin-hero b {
+	      font-size: 18px;
+	      line-height: 1.35;
+	      overflow-wrap: anywhere;
+	    }
+	    .distance-row {
+	      display: grid;
+	      grid-template-columns: repeat(2, minmax(0, 1fr));
+	      gap: 8px;
+	    }
+	    .distance-tile {
+	      border: 1px solid var(--line);
+	      border-radius: 14px;
+	      background: #fff;
+	      padding: 11px;
+	      display: grid;
+	      gap: 5px;
+	    }
+	    .distance-tile span {
+	      color: var(--muted);
+	      font-size: 11px;
+	    }
+	    .distance-tile b {
+	      color: var(--ink);
+	      font-size: 16px;
+	      line-height: 1.25;
+	    }
+	    .distance-tile.warn b { color: var(--danger); }
+	    .checkin-plan-list {
+	      display: grid;
+	      gap: 10px;
+	    }
+	    .checkin-plan-item {
+	      border: 1px solid rgb(21 33 29 / 8%);
+	      border-radius: 16px;
+	      background: #fff;
+	      color: var(--ink);
+	      padding: 13px;
+	      text-align: left;
+	      display: grid;
+	      gap: 8px;
+	      box-shadow: 0 6px 16px rgb(34 48 42 / 5%);
+	    }
+	    .checkin-plan-item strong {
+	      font-size: 15px;
+	      line-height: 1.4;
+	    }
+	    .checkin-plan-item span {
+	      color: var(--muted);
+	      font-size: 12px;
+	      line-height: 1.45;
+	    }
+	    .checkin-status-strip {
+	      border-radius: 14px;
+	      background: #f6f1e8;
+	      color: #805e2c;
+	      padding: 10px 12px;
+	      font-size: 13px;
+	      line-height: 1.5;
+	    }
+	    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding-top: 2px;
+    }
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--accent);
+      border-radius: 12px;
+      min-height: 38px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .btn.primary {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .btn.full {
+      flex: 1 1 150px;
+    }
+    .timeline {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      display: grid;
+      gap: 9px;
+      max-height: 190px;
+      overflow: auto;
+      background: #fff;
+    }
+    .trace-line {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      font-size: 12px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin: 5px auto 0;
+    }
+    .trace-line div {
+      display: grid;
+      gap: 2px;
+    }
+    .trace-line small { color: var(--muted); }
+    .error-card {
+      border: 1px solid rgb(180 90 76 / 22%);
+      border-radius: 14px;
+      background: #fff7f5;
+      color: var(--danger);
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .composer {
+      padding: 10px 12px max(12px, env(safe-area-inset-bottom));
+      background: rgb(255 255 251 / 92%);
+      border-top: 1px solid var(--line);
+      backdrop-filter: blur(18px);
+      display: grid;
+      gap: 8px;
+    }
+    .input-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    textarea {
+      width: 100%;
+      min-height: 44px;
+      max-height: 112px;
+      resize: none;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+      color: var(--ink);
+      padding: 11px 12px;
+      outline: none;
+      line-height: 1.5;
+    }
+    .send {
+      width: 44px;
+      height: 44px;
+      border: 0;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .mini-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 520px) {
+      .page { padding: 0; }
+      .phone {
+        width: 100%;
+        height: 100dvh;
+        border: 0;
+        border-radius: 0;
+      }
+    }
+    .phone {
+      grid-template-rows: minmax(0, 1fr) auto;
+      background:
+        linear-gradient(180deg, #edf7f1 0%, #f7f8f5 28%, #f7f8f5 100%);
+    }
+    .tab-page {
+      min-height: 0;
+      overflow: auto;
+      display: none;
+      padding: max(28px, env(safe-area-inset-top)) 18px 96px;
+      position: relative;
+    }
+    .tab-page.active { display: block; }
+    .assistant-page {
+      display: none;
+      padding: 0;
+      overflow: hidden;
+    }
+    .assistant-page.active {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+    .app-status {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #0f0f10;
+      font-size: 15px;
+      font-weight: 800;
+      padding: 6px 6px 22px;
+    }
+    .sys-icons {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+    .battery {
+      border-radius: 5px;
+      background: #39c861;
+      color: #fff;
+      padding: 1px 5px;
+      font-size: 12px;
+      line-height: 1.3;
+    }
+    .page-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 78px;
+    }
+    .page-title {
+      display: grid;
+      gap: 8px;
+    }
+    .page-title h1 {
+      margin: 0;
+      color: #1d1f23;
+      font-size: 25px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+    .page-title span {
+      color: #8b929a;
+      font-size: 14px;
+    }
+    .head-icons {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      color: #1f252b;
+      font-size: 28px;
+    }
+    .claim-link {
+      color: #34795a;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 32px;
+      white-space: nowrap;
+    }
+    .tabs-row,
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      overflow-x: auto;
+      padding: 8px 0 18px;
+      color: #626870;
+      white-space: nowrap;
+    }
+    .tab-text {
+      border: 0;
+      background: transparent;
+      color: inherit;
+      padding: 0 0 10px;
+      font-size: 18px;
+      font-weight: 650;
+      position: relative;
+    }
+    .tab-text.active {
+      color: #171a1f;
+      font-weight: 850;
+    }
+    .tab-text.active::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      width: 30px;
+      height: 3px;
+      border-radius: 999px;
+      background: #34795a;
+      transform: translateX(-50%);
+    }
+    .static-card {
+      border: 0;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, .94);
+      box-shadow: 0 8px 26px rgb(67 76 91 / 6%);
+    }
+    .work-score {
+      padding: 18px 12px 24px;
+      background: linear-gradient(145deg, #d8eadf 0%, #b9dcc9 100%);
+    }
+    .work-score-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #0d2b76;
+      font-size: 18px;
+      font-weight: 850;
+      padding: 0 4px 16px;
+    }
+    .score-empty {
+      height: 178px;
+      border-radius: 17px;
+      background: #fff;
+      display: grid;
+      place-items: center;
+      color: #747a84;
+      font-size: 15px;
+    }
+    .realtime-card {
+      padding: 20px 14px 18px;
+      margin-top: 14px;
+    }
+    .card-line-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 19px;
+      font-weight: 850;
+      color: #20242a;
+      margin-bottom: 20px;
+    }
+    .card-line-title span {
+      color: #9aa0a8;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 26px 14px;
+    }
+    .metric {
+      display: grid;
+      gap: 8px;
+      color: #8b929a;
+      font-size: 13px;
+      line-height: 1.25;
+    }
+    .metric b {
+      color: #20242a;
+      font-size: 22px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .up { color: #f14d4d; }
+    .down { color: #28bd72; }
+    .shortcut-card {
+      margin-top: 14px;
+      padding: 16px 10px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .shortcut {
+      display: grid;
+      justify-items: center;
+      gap: 8px;
+      color: #171a1f;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .shortcut i,
+    .client-logo,
+    .nav-icon,
+    .tool-fab {
+      font-style: normal;
+      display: grid;
+      place-items: center;
+    }
+    .shortcut i {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      color: #fff;
+      background: linear-gradient(145deg, #6f8bff, #48b5ff);
+      box-shadow: 0 8px 18px rgb(57 119 246 / 22%);
+    }
+    .search-box {
+      min-height: 48px;
+      border-radius: 999px;
+      background: #edf0f5;
+      color: #8e949c;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      font-size: 17px;
+      margin: 8px 0 24px;
+    }
+    .sort-line {
+      display: flex;
+      justify-content: space-between;
+      color: #626870;
+      font-size: 15px;
+      margin-bottom: 14px;
+    }
+    .client-card {
+      padding: 18px 14px;
+      margin-bottom: 14px;
+    }
+    .client-top {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+    .client-logo {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 1px solid #eceff3;
+      color: #d72137;
+      font-weight: 900;
+      background: #fff;
+    }
+    .client-name {
+      color: #171a1f;
+      font-size: 17px;
+      font-weight: 850;
+      line-height: 1.35;
+    }
+    .client-sub {
+      color: #747b85;
+      font-size: 13px;
+      line-height: 1.5;
+      margin-top: 3px;
+    }
+    .client-store {
+      color: #8c939c;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .client-metrics {
+      margin: 16px 0;
+      border-radius: 12px;
+      background: #f4f5f7;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      padding: 12px 8px;
+      gap: 8px;
+      text-align: center;
+    }
+    .client-metrics b {
+      display: block;
+      color: #171a1f;
+      font-size: 20px;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .client-metrics span {
+      color: #8b929a;
+      font-size: 12px;
+    }
+    .client-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: #626870;
+      font-size: 13px;
+    }
+    .small-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .ghost-pill {
+      min-height: 34px;
+      border: 1px solid #e3e6eb;
+      border-radius: 999px;
+      background: #fff;
+      color: #4d535b;
+      padding: 0 18px;
+      font-weight: 700;
+    }
+    .assistant-page .top {
+      padding: max(30px, env(safe-area-inset-top)) 22px 18px;
+      background: transparent;
+      border: 0;
+      align-items: flex-start;
+    }
+    .assistant-page .back,
+    .assistant-page .logo,
+    .assistant-page .status {
+      display: none;
+    }
+    .assistant-page .title b {
+      color: #1d1f23;
+      font-size: 21px;
+      font-weight: 800;
+      line-height: 1.18;
+    }
+    .assistant-page .title span {
+      color: #8b929a;
+      font-size: 15px;
+      font-weight: 550;
+      white-space: normal;
+    }
+    .assistant-page .icon-btn {
+      width: 52px;
+      height: 52px;
+      border: 1px solid rgba(255, 255, 255, .8);
+      background: rgba(255, 255, 255, .78);
+      box-shadow: 0 12px 28px rgb(60 84 128 / 12%);
+      font-size: 24px;
+    }
+    .assistant-page .stream {
+      padding: 36px 18px 24px;
+      gap: 16px;
+    }
+    .assistant-page .hero {
+      margin: 8px 0 86px;
+      gap: 24px;
+    }
+    .assistant-page .hero h1 {
+      font-size: 36px;
+      line-height: 1.14;
+      color: #020407;
+      font-weight: 850;
+    }
+    .assistant-page .hero p {
+      color: #626870;
+      font-size: 17px;
+      font-weight: 500;
+      line-height: 1.5;
+    }
+    .assistant-page .quick-row {
+      display: grid;
+      gap: 0;
+      overflow: hidden;
+      padding: 22px 28px;
+      border-radius: 30px;
+      background: rgba(255, 255, 255, .95);
+      box-shadow: 0 12px 34px rgb(58 70 92 / 7%);
+    }
+    .assistant-page .quick {
+      width: 100%;
+      min-height: 72px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      color: #15181d;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 46px;
+      align-items: center;
+      padding: 0;
+      text-align: left;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .assistant-page .quick::after {
+      content: "›";
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: #f5f6f8;
+      display: grid;
+      place-items: center;
+      font-size: 32px;
+      line-height: 1;
+      color: #171a1f;
+    }
+    .assistant-page .composer {
+      margin: 0;
+      padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
+      border-top: 1px solid #e9edf2;
+      background: rgba(255, 255, 255, .92);
+      border-radius: 22px 22px 0 0;
+    }
+    .assistant-page .input-row {
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      height: 56px;
+      min-height: 56px;
+      border: 1px solid #e0e4ea;
+      border-radius: 999px;
+      background: #fff;
+      padding: 0 11px 0 22px;
+      gap: 10px;
+      align-items: center;
+    }
+    .add-symbol {
+      width: 26px;
+      height: 26px;
+      color: #22262c;
+      display: grid;
+      place-items: center;
+      font-size: 30px;
+      font-weight: 300;
+      line-height: 1;
+    }
+    .assistant-page .chat-input {
+      width: 100%;
+      display: block;
+      border: 0;
+      outline: 0;
+      height: 40px;
+      min-height: 40px;
+      padding: 0;
+      background: transparent;
+      font-size: 15px;
+      line-height: 40px;
+      overflow: hidden;
+      color: #20242a;
+    }
+    .assistant-page .chat-input::placeholder {
+      color: #c4c8ce;
+      font-weight: 600;
+    }
+    .assistant-page .send {
+      width: 40px;
+      height: 40px;
+      background: #222326;
+      position: relative;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+    }
+    .assistant-page .send svg {
+      width: 24px;
+      height: 24px;
+      stroke: #fff;
+      stroke-width: 2.5;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .voice-input {
+      width: 40px;
+      height: 40px;
+      border: 0;
+      border-radius: 50%;
+      background: #eef2ef;
+      color: var(--accent);
+      display: grid;
+      place-items: center;
+      font-size: 19px;
+    }
+    .voice-input.recording {
+      color: #fff;
+      background: var(--danger);
+      animation: voice-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes voice-pulse { 50% { box-shadow: 0 0 0 7px rgb(180 90 76 / 15%); } }
+    .assistant-page .mini-actions {
+      display: none;
+    }
+    .data-card {
+      padding: 20px 14px 24px;
+      border-radius: 20px 20px 24px 24px;
+      margin: 10px -18px 18px;
+    }
+    .data-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+    .data-tabs span {
+      border-radius: 10px;
+      background: #f1f3f6;
+      padding: 7px 13px;
+      color: #68707a;
+      font-size: 15px;
+    }
+    .data-tabs .active {
+      background: #fff;
+      color: #15181d;
+      box-shadow: 0 3px 10px rgb(36 48 64 / 8%);
+    }
+    .core-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .core-metric {
+      min-height: 112px;
+      border-radius: 10px;
+      background: #f7f8fb;
+      padding: 13px 11px;
+      color: #7e858f;
+      font-size: 13px;
+      display: grid;
+      align-content: start;
+      gap: 9px;
+    }
+    .core-metric.active {
+      border: 1.5px solid #34795a;
+      background: #f7fbf8;
+    }
+    .core-metric b {
+      color: #0d1014;
+      font-size: 22px;
+      font-variant-numeric: tabular-nums;
+    }
+    .line-chart {
+      height: 230px;
+      margin-top: 24px;
+      border-radius: 12px;
+      background:
+        linear-gradient(#e8ebef 1px, transparent 1px) 0 28px / 100% 48px,
+        linear-gradient(180deg, transparent 0%, rgba(52, 121, 90, .10) 62%, transparent 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .line-chart svg {
+      position: absolute;
+      inset: 18px 8px 18px;
+      width: calc(100% - 16px);
+      height: calc(100% - 36px);
+    }
+    .tool-list {
+      display: grid;
+      gap: 14px;
+      margin-top: 22px;
+    }
+    .visit-tool-card {
+      padding: 18px 14px;
+      display: grid;
+      gap: 12px;
+      position: relative;
+    }
+    .visit-tool-card h3 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.3;
+    }
+    .visit-tool-card p {
+      margin: 0;
+      color: #656d77;
+      font-size: 13px;
+      line-height: 1.65;
+    }
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .tag-row span {
+      border: 1px solid #dbe2ee;
+      color: #34795a;
+      border-radius: 5px;
+      padding: 2px 6px;
+      font-size: 12px;
+    }
+    .tool-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .primary-pill {
+      border: 0;
+      border-radius: 999px;
+      background: #34795a;
+      color: #fff;
+      min-height: 42px;
+      padding: 0 24px;
+      font-size: 15px;
+      font-weight: 800;
+    }
+    .tool-fab {
+      position: sticky;
+      bottom: 12px;
+      margin-left: auto;
+      width: 64px;
+      height: 64px;
+      border: 0;
+      border-radius: 50%;
+      color: #fff;
+      background: linear-gradient(145deg, #54aa7c, #2f7d5b);
+      font-size: 38px;
+      box-shadow: 0 10px 24px rgb(47 125 91 / 34%);
+    }
+    .tabbar {
+      height: 72px;
+      padding: 6px 12px max(6px, env(safe-area-inset-bottom));
+      background: rgba(255, 255, 255, .94);
+      border-top: 1px solid #e9edf2;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      align-items: center;
+      z-index: 20;
+    }
+    .nav-item {
+      border: 0;
+      background: transparent;
+      color: #72777f;
+      display: grid;
+      justify-items: center;
+      gap: 3px;
+      font-size: 12px;
+      line-height: 1.2;
+      padding: 0;
+    }
+    .nav-icon {
+      width: 30px;
+      height: 30px;
+      color: inherit;
+      font-size: 24px;
+      line-height: 1;
+    }
+    .nav-item.active {
+      color: #34795a;
+      font-weight: 800;
+    }
+    .nav-item.assistant-tab .nav-icon {
+      width: 54px;
+      height: 40px;
+      margin-top: -18px;
+      border-radius: 999px;
+      background: radial-gradient(circle at 50% 42%, #fff36d 0 29%, #ffe238 30% 49%, rgba(117, 96, 255, .18) 51% 100%);
+      color: #29343a;
+      box-shadow: 0 10px 22px rgb(255 218 55 / 30%);
+      font-size: 19px;
+    }
+    .nav-item.assistant-tab span:last-child {
+      opacity: 0;
+      height: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <main class="phone">
+      <section class="tab-page active" data-tab-page="workbench">
+        <div class="app-status"><span>14:13</span><span class="sys-icons">▮▮▮ ))) <span class="battery">40</span></span></div>
+        <div class="page-head">
+          <div class="page-title">
+            <h1>你好，能工智人⌄</h1>
+          </div>
+          <div class="head-icons"><span>⌕</span><span>☻</span></div>
+        </div>
+        <section class="static-card work-score">
+          <div class="work-score-head"><span>到店事业部⌄</span><span>-- 完成率</span></div>
+          <div class="score-empty">暂无业绩考核数据~</div>
+        </section>
+        <section class="static-card realtime-card">
+          <div class="card-line-title">实时数据 <span>更新于14:12　更多 ›</span></div>
+          <div class="metric-grid">
+            <div class="metric"><span>总消耗</span><b>--</b><span>较昨日 <em class="down">--</em></span><span>周同比 <em class="down">--</em></span></div>
+            <div class="metric"><span>外部消耗</span><b>--</b><span>较昨日 <em class="down">--</em></span><span>周同比 <em class="down">--</em></span></div>
+            <div class="metric"><span>当日预估消耗</span><b>--</b><span>较昨日 <em class="down">--</em></span><span>周同比 <em class="down">--</em></span></div>
+            <div class="metric"><span>支付GMV</span><b>371.24万</b><span>较昨日 <em class="up">↑ 3.70%</em></span><span>周同比 <em class="up">↑ 4.32%</em></span></div>
+            <div class="metric"><span>货补率</span><b>0.43%</b><span>较昨日 <em class="down">↓ 0.31pp</em></span><span>周同比 <em class="down">↓ 0.43pp</em></span></div>
+            <div class="metric"><span>支付订单量</span><b>8.15万</b><span>较昨日 <em class="up">↑ 16.73%</em></span><span>周同比 <em class="down">↓ 0.15%</em></span></div>
+          </div>
+        </section>
+        <section class="static-card shortcut-card">
+          <div class="shortcut"><i>▣</i><span>运营报告</span></div>
+          <div class="shortcut"><i>◒</i><span>活动报名</span></div>
+          <div class="shortcut"><i>POI</i><span>POI管理</span></div>
+          <div class="shortcut"><i>▤</i><span>素材上传</span></div>
+          <div class="shortcut"><i>⚡</i><span>商品预警</span></div>
+        </section>
+      </section>
+
+      <section class="tab-page" data-tab-page="clients">
+        <div class="app-status"><span>14:13</span><span class="sys-icons">▮▮▮ ))) <span class="battery">40</span></span></div>
+        <div class="page-head">
+          <div class="page-title"><h1>客户管理</h1></div>
+          <div class="head-icons"><span class="claim-link">＋认领客户</span></div>
+        </div>
+        <div class="tabs-row"><button class="tab-text active" type="button">我的客户</button><button class="tab-text" type="button">客户公海</button></div>
+        <div class="search-box">⌕ 搜索客户名称</div>
+        <div class="sort-line"><span>支付 GMV 倒序⌄</span><span>筛选⌄</span></div>
+        <section class="static-card client-card">
+          <div class="client-top"><div class="client-logo">S</div><div><div class="client-name">长春市中国石化</div><div class="client-sub">本地服务｜其他生活服务｜CKA｜入驻成功</div></div><div class="client-store">135 家店</div></div>
+          <div class="client-metrics"><div><b>41.14w元</b><span>风控后支付 GMV</span></div><div><b>0次</b><span>有效直播场次</span></div><div><b>1,936件</b><span>优质视频投稿量</span></div></div>
+          <div class="client-bottom"><span>负责人：阿苑</span><div class="small-actions"><button class="ghost-pill">签到</button><button class="ghost-pill">代运营</button></div></div>
+        </section>
+        <section class="static-card client-card">
+          <div class="client-top"><div class="client-logo">九</div><div><div class="client-name">九号电动车生活服务旗舰店</div><div class="client-sub">交通工具｜非机动车厂商｜CKA｜入驻成功</div></div><div class="client-store">8250 家店</div></div>
+          <div class="client-metrics"><div><b>24.83w元</b><span>风控后支付 GMV</span></div><div><b>0次</b><span>有效直播场次</span></div><div><b>157件</b><span>优质视频投稿量</span></div></div>
+          <div class="client-bottom"><span>负责人：阿苑</span><div class="small-actions"><button class="ghost-pill">签到</button><button class="ghost-pill">代运营</button></div></div>
+        </section>
+        <section class="static-card client-card">
+          <div class="client-top"><div class="client-logo">塔</div><div><div class="client-name">塔斯汀</div><div class="client-sub">餐饮｜小吃快餐｜SKA,CKA｜入驻成功</div></div><div class="client-store">8057 家店</div></div>
+        </section>
+      </section>
+
+      <section class="assistant-page" data-tab-page="assistant">
+        <header class="top">
+          <button class="back" id="backBtn" type="button" aria-label="返回">‹</button>
+          <div class="logo">V</div>
+          <div class="title">
+            <b>拜访通</b>
+            <span id="userLine">内容由 AI 生成，仅供参考</span>
+          </div>
+          <div class="header-actions">
+            <button class="icon-btn" id="historyBtn" type="button" title="查看历史会话" aria-label="查看历史会话">◴</button>
+            <button class="icon-btn" id="newConversationBtn" type="button" title="新建会话" aria-label="新建会话">☻</button>
+            <span class="status" id="stateChip">空闲</span>
+          </div>
+        </header>
+        <section class="history-panel" id="historyPanel" aria-label="历史会话">
+          <div class="history-panel-head">
+            <b>历史会话</b>
+            <button id="closeHistoryBtn" type="button" aria-label="关闭">×</button>
+          </div>
+          <div class="history-list" id="historyList">
+            <div class="history-empty">暂无历史会话</div>
+          </div>
+        </section>
+
+        <section class="stream" id="stream">
+          <div class="hero" id="hero">
+            <h1>下午好</h1>
+            <p>我是智能助手，有什么可以帮助你吗？</p>
+	            <div class="quick-row">
+	              <button class="quick" data-start>帮我创建拜访计划</button>
+	              <button class="quick" data-checkin-start>帮我签到</button>
+	              <button class="quick" data-checkout-start>帮我签退</button>
+	              <button class="quick" data-log-start>帮我填写拜访日志</button>
+            </div>
+          </div>
+        </section>
+
+        <footer class="composer">
+          <div class="input-row">
+            <span class="add-symbol">＋</span>
+            <input class="chat-input" id="input" autocomplete="off" placeholder="发消息或按住说话" />
+            <button class="voice-input" id="voiceBtn" type="button" aria-label="实时语音输入" title="实时语音输入">🎙</button>
+            <button class="send" id="sendBtn" type="button" aria-label="发送">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h13"></path><path d="m13 6 6 6-6 6"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="mini-actions">
+            <span id="flowHint">创建流程由 New-Agent 本地服务处理</span>
+            <button class="btn" id="resetBtn" type="button">重来</button>
+          </div>
+        </footer>
+      </section>
+
+      <section class="tab-page" data-tab-page="data">
+        <div class="app-status"><span>14:13</span><span class="sys-icons">▮▮▮ ))) <span class="battery">41</span></span></div>
+        <div class="page-head">
+          <div class="page-title"><h1>数据中心 <span style="font-size:16px;color:#626870;font-weight:500;">到店事业部⌄</span></h1></div>
+          <div class="head-icons"><span>⌕</span></div>
+        </div>
+        <div class="tabs-row"><button class="tab-text active" type="button">实时数据</button><button class="tab-text" type="button">交易分析</button><button class="tab-text" type="button">收入分析</button><button class="tab-text" type="button">直播分析</button></div>
+        <section class="static-card data-card">
+          <div class="card-line-title">核心实时数据 <span>更新于：2026-09-11 14:13:40 ↻</span></div>
+          <div class="data-tabs"><span class="active">广告</span><span>团购</span></div>
+          <div class="core-grid">
+            <div class="core-metric active"><span>总消耗</span><b>1,587.83万</b><span>日环比 <em class="down">↓-2.94%</em></span><span>周同比 <em class="down">↓-3.68%</em></span></div>
+            <div class="core-metric"><span>外部消耗</span><b>1,587.80万</b><span>日环比 <em class="down">↓-2.94%</em></span><span>周同比 <em class="down">↓-3.68%</em></span></div>
+            <div class="core-metric"><span>活跃客户数</span><b>9,966个</b><span>日环比 <em class="up">↑0.47%</em></span><span>周同比 <em class="up">↑2.78%</em></span></div>
+            <div class="core-metric"><span>当日预估消耗</span><b>3,055.45万</b><span>日环比 <em class="down">↓-2.94%</em></span><span>周同比 --</span></div>
+          </div>
+          <div class="data-tabs" style="margin-top:22px;"><span class="active">分时</span><span>累计</span></div>
+          <div class="line-chart">
+            <svg viewBox="0 0 340 180" preserveAspectRatio="none" aria-hidden="true">
+              <polyline points="5,142 45,154 88,158 124,148 156,104 192,70 230,38 268,34 304,18 335,42" fill="none" stroke="#34795a" stroke-width="4" />
+              <polyline points="5,140 45,153 88,156 124,142 156,91 192,62 230,48 268,30 304,12 335,36" fill="none" stroke="#20c7ae" stroke-width="3" stroke-dasharray="8 7" />
+              <polyline points="5,144 45,155 88,157 124,150 156,112 192,73 230,32 268,28 304,8 335,26" fill="none" stroke="#7657ff" stroke-width="3" stroke-dasharray="8 7" />
+            </svg>
+          </div>
+        </section>
+      </section>
+
+      <section class="tab-page" data-tab-page="tools">
+        <div class="app-status"><span>14:13</span><span class="sys-icons">▮▮▮ ))) <span class="battery">41</span></span></div>
+        <div class="page-head">
+          <div class="page-title"><h1>工具中心</h1></div>
+          <div class="head-icons"><span>▣</span><span>◴</span></div>
+        </div>
+        <div class="tabs-row"><button class="tab-text active" type="button">拜访工具</button></div>
+        <div class="search-box">⌕ 搜索营业执照或门店名称</div>
+        <div class="sort-line"><span>2026-09⌄</span><span>回到今日</span></div>
+        <div class="filter-row"><span>拜访状态⌄</span><span>拜访形式⌄</span><span>筛选⌄</span></div>
+        <div class="tool-list">
+          <section class="static-card visit-tool-card">
+            <h3>北京贝嘉商贸有限公司 <span style="float:right;color:#34795a;font-size:14px;">待填写日志</span></h3>
+            <div class="tag-row"><span>广告客户 · 新</span><span>本地拜访</span></div>
+            <p>计划拜访时间：09月11日<br />门店名称：北京贝嘉望京店</p>
+            <div class="client-bottom"><span>阿苑</span><div class="tool-actions"><button class="ghost-pill">修改计划</button><button class="ghost-pill">填写日志</button><button class="primary-pill">签到</button></div></div>
+          </section>
+          <section class="static-card visit-tool-card">
+            <h3>北京莫捷汽车销售服务有限公司 <span style="float:right;color:#34795a;font-size:14px;">待填写日志</span></h3>
+            <div class="tag-row"><span>广告客户 · 老</span><span>本地拜访</span></div>
+            <p>计划拜访时间：09月11日<br />门店名称：捷途汽车北京莫捷体验中心</p>
+            <div class="client-bottom"><span>阿苑</span><div class="tool-actions"><button class="ghost-pill">修改计划</button><button class="ghost-pill">填写日志</button></div></div>
+          </section>
+          <section class="static-card visit-tool-card">
+            <h3>卡尔男士</h3>
+            <div class="tag-row"><span>团购客户</span><span>本地拜访</span></div>
+          </section>
+        </div>
+        <button class="tool-fab" type="button">＋</button>
+      </section>
+
+      <nav class="tabbar" aria-label="底部导航">
+        <button class="nav-item active" type="button" data-tab-target="workbench"><span class="nav-icon">⌂</span><span>工作台</span></button>
+        <button class="nav-item" type="button" data-tab-target="clients"><span class="nav-icon">♙</span><span>客户</span></button>
+        <button class="nav-item assistant-tab" type="button" data-tab-target="assistant"><span class="nav-icon">⌣</span><span>拜访通</span></button>
+        <button class="nav-item" type="button" data-tab-target="data"><span class="nav-icon">▥</span><span>数据</span></button>
+        <button class="nav-item" type="button" data-tab-target="tools"><span class="nav-icon">▣</span><span>工具</span></button>
+      </nav>
+    </main>
+  </div>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const stream = $("#stream");
+    const input = $("#input");
+    const stateChip = $("#stateChip");
+    const flowHint = $("#flowHint");
+    const historyPanel = $("#historyPanel");
+    const historyList = $("#historyList");
+    let activeSessionId = "";
+    let activeConversationId = "";
+    let visitConversations = [];
+	    let visitBootstrap = {
+	      licenses: [],
+	      purposes: [],
+	      addresses: [],
+	      travelApplications: [],
+	    };
+	    let activePurposeGroup = "";
+	    let currentLocation = null;
+    let customerSearchTimer = 0;
+    let customerSearchRequest = 0;
+    let visitRecording = null;
+    let realtimeInput = null;
+    const recordingPolls = new Map();
+
+    function switchTab(target) {
+      document.querySelectorAll("[data-tab-page]").forEach((page) => {
+        page.classList.toggle("active", page.dataset.tabPage === target);
+      });
+      document.querySelectorAll("[data-tab-target]").forEach((item) => {
+        item.classList.toggle("active", item.dataset.tabTarget === target);
+      });
+      historyPanel?.classList.remove("open");
+      if (target === "assistant") scrollBottom();
+    }
+
+    const FIELD_LABELS = {
+      visitType: "拜访形式",
+      visitObjectType: "对象类型",
+      customerType: "客户类型",
+      visitObjectInfo: "拜访对象",
+      visitPurpose: "拜访目的",
+      planVisitTime: "拜访时间",
+      planVisitAddress: "拜访地址",
+      travelApplyNo: "差旅单号",
+      adIsTarget: "靶向新客",
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function removeHero() {
+      $("#hero")?.remove();
+    }
+
+    function restoreHero() {
+      if ($("#hero")) return;
+      stream.innerHTML = `<div class="hero" id="hero">
+          <h1>下午好</h1>
+          <p>我是智能助手，有什么可以帮助你吗？</p>
+	          <div class="quick-row">
+	            <button class="quick" data-start>帮我创建拜访计划</button>
+	            <button class="quick" data-checkin-start>签到</button>
+	            <button class="quick" data-checkout-start>帮我签退</button>
+	            <button class="quick" data-log-start>帮我填写拜访日志</button>
+          </div>
+        </div>`;
+    }
+
+    function scrollBottom() {
+      requestAnimationFrame(() => {
+        stream.scrollTop = stream.scrollHeight;
+        requestAnimationFrame(() => {
+          stream.scrollTop = stream.scrollHeight;
+        });
+      });
+    }
+
+    function revealCreateForm(card) {
+      requestAnimationFrame(() => {
+        const top = card.offsetTop - stream.offsetTop - 8;
+        stream.scrollTop = Math.max(0, top);
+      });
+    }
+
+    function addMessage(role, text) {
+      removeHero();
+      const wrap = document.createElement("div");
+      wrap.className = `msg ${role}`;
+      wrap.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+      stream.appendChild(wrap);
+      scrollBottom();
+    }
+
+	    function addCard(response) {
+      removeHero();
+      activeSessionId = response.session?.id || activeSessionId;
+      activeConversationId = response.conversation?.id || response.session?.conversationId || activeConversationId;
+      const card = response.card || {};
+      const wrap = document.createElement("section");
+	      wrap.className = card.type === "create-form" ? "card plan-card" : "card";
+      if (card.type === "create-form") {
+        addAnalysisRow(response);
+        wrap.innerHTML = `<div class="card-body">${renderCardBody(response)}</div>`;
+      } else {
+        wrap.innerHTML = `<div class="card-head"><div class="card-title"><b>${escapeHtml(card.title || "拜访计划")}</b><span>${escapeHtml(resolveCardSubtitle(response))}</span></div><span class="badge">${escapeHtml(resolveStateLabel(response.session?.fsmState || ""))}</span></div><div class="card-body">${renderCardBody(response)}</div>`;
+      }
+      stream.appendChild(wrap);
+      if (card.type === "create-form") {
+        const planForm = wrap.querySelector(".plan-form-card");
+        if (planForm) syncCreatePlanButton(wrap);
+        revealCreateForm(wrap);
+      } else {
+        scrollBottom();
+      }
+      if (card.type === "recording-processing") {
+        const recordingId = card.data?.id || card.data?.recordingId;
+        if (recordingId) pollRecording(recordingId, wrap);
+      }
+      return wrap;
+    }
+
+    function formatTime(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      const pad = (num) => String(num).padStart(2, "0");
+      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    function renderHistoryList() {
+      if (!historyList) return;
+      if (!visitConversations.length) {
+        historyList.innerHTML = `<div class="history-empty">暂无历史会话</div>`;
+        return;
+      }
+      historyList.innerHTML = visitConversations.map((item) => `
+        <button class="visit-history-item ${item.id === activeConversationId ? "active" : ""}" type="button" data-open-conversation="${escapeHtml(item.id)}">
+          <b>${escapeHtml(item.title || "未命名会话")}</b>
+          <span>${escapeHtml(formatTime(item.updatedAt || item.createdAt))} · ${Number(item.messages?.length || 0)} 条消息</span>
+        </button>
+      `).join("");
+    }
+
+    async function refreshHistory() {
+      visitConversations = await api("/api/visit/conversations");
+      renderHistoryList();
+    }
+
+    function resetSurface() {
+      stream.innerHTML = "";
+      activeSessionId = "";
+      restoreHero();
+      flowHint.textContent = "创建流程由 New-Agent 本地服务处理";
+    }
+
+    async function startBlankConversation() {
+      const conversation = await api("/api/visit/conversations", { method: "POST" });
+      activeConversationId = conversation.id;
+      resetSurface();
+      flowHint.textContent = "新会话已创建，可以直接描述拜访计划";
+      historyPanel?.classList.remove("open");
+      await refreshHistory();
+    }
+
+    async function openVisitConversation(conversationId) {
+      const data = await api(`/api/visit/conversations/${conversationId}`);
+      const conversation = data.conversation;
+      activeConversationId = conversation.id;
+      stream.innerHTML = "";
+      for (const item of conversation.messages || []) {
+        addMessage(item.role, item.content);
+        if (item.role === "assistant" && item.cardSnapshot) {
+          addCard({
+            session: item.sessionId ? { id: item.sessionId, conversationId: conversation.id, fsmState: "" } : undefined,
+            conversation,
+            message: item.content,
+            card: item.cardSnapshot,
+          });
+        }
+      }
+      activeSessionId = data.activeSession?.id || conversation.activeSessionId || "";
+      if (data.activeResponse && data.activeSession?.fsmState !== "DONE" && !conversation.messages?.some((item) => item.cardSnapshot)) {
+        addCard(data.activeResponse);
+      }
+      flowHint.textContent = `已打开历史会话：${conversation.title || "未命名会话"}`;
+      historyPanel?.classList.remove("open");
+      renderHistoryList();
+    }
+
+    function addAnalysisRow(response) {
+      const old = stream.querySelector(".analysis-row");
+      if (old) return;
+      const waitingCount = response.session?.waitingFor?.length || 7;
+      const row = document.createElement("div");
+      row.className = "analysis-row";
+      row.innerHTML = `<b>🔧 已分析</b><span>共${waitingCount}个步骤</span><i>›</i>`;
+      stream.appendChild(row);
+    }
+
+	    function display(value) {
+	      if (value === null || value === undefined || value === "") return "-";
+	      if (typeof value === "object") {
+        if (value.value === "local") return "本地拜访";
+        if (value.value === "travel") return "出差拜访";
+        if (value.value === "ad_customer") return "广告客户";
+        if (value.value === "agent") return "广告代理商";
+        if (value.value === "store") return "门店";
+        if (value.value === "provider") return "团购服务商";
+        if (value.value === "new") return "新客";
+        if (value.value === "old") return "老客";
+        return value.displayName || value.corporationName || value.poiName || value.address || value.label || value.targetCustomerName || value.travelApplyNo || JSON.stringify(value);
+	      }
+	      return String(value);
+	    }
+
+	    function inputDisplay(value) {
+	      const text = display(value);
+	      return text === "-" ? "" : text;
+	    }
+
+	    function resolveStateLabel(state) {
+      return {
+        PENDING: "待开始",
+        FILLING: "信息补全",
+        CONFIRMING: "待确认",
+        DONE: "已完成",
+        CANCELED: "已取消",
+      }[state] || state || "进行中";
+    }
+
+	    function resolveCardSubtitle(response) {
+	      const card = response.card || {};
+	      if (card.type === "create-form") return "按字段补齐，也可以直接在下方对话描述";
+	      if (card.type === "enable-location") return "签到前需要当前位置";
+	      if (card.type === "checkin-plans") return "选择今日要签到的拜访计划";
+	      if (card.type === "checkin-card") return "核对位置后拍照签到";
+	      if (card.type === "checkin-success") return "已完成签到，可继续录制纪要";
+	      if (card.type === "checkout-plans") return "选择已签到、待签退的拜访计划";
+	      if (card.type === "checkout-precheck" || card.type === "checkout-confirm") return "核对签退位置与业务规则";
+	      if (card.type === "checkout-success") return "签退完成，可继续填写日志";
+	      if (card.type === "log-plans") return "选择要填写或修改日志的计划";
+	      if (card.type === "visit-log") return "补充联系人与本次拜访纪要";
+	      if (card.type === "log-success") return "日志已保存，可提交审核";
+	      if (card.type === "recording") return "录音任务已创建，可输入转写文本联调";
+	      if (card.type === "recording-processing") return "转写与摘要任务正在异步处理";
+	      if (card.type === "review-pending") return "日志已进入审核队列";
+	      if (card.type === "canceled") return "计划已取消";
+	      if (card.type === "cancel-plans") return "选择尚未开始的计划并确认取消";
+	      if (card.type === "candidates") return "选择最匹配的一项后继续推进流程";
+      if (card.type === "ask") return "还缺少一个关键信息";
+      if (card.type === "confirm") return "确认后将写入拜访计划";
+      if (card.type === "success") return "计划已创建，可直接修改当前计划";
+      if (card.type === "error") return "流程执行遇到异常";
+      return response.message || "拜访计划创建流程";
+    }
+
+    function optionText(value, fallback) {
+      return value ? "已选择：" + display(value) : fallback;
+    }
+
+    function candidateMetaText(item, slotName) {
+      const payload = item?.payload || {};
+      if (payload.licenseNo) return payload.licenseNo;
+      if (payload.regCity) return payload.regCity;
+      if (payload.city) return payload.city;
+      if (payload.poiId) return "门店 POI";
+      if (payload.travelApplyNo) return payload.status || "差旅单";
+      if (payload.value) return display(payload);
+      return FIELD_LABELS[slotName] || "候选项";
+    }
+
+    function escapeJson(value) {
+      return escapeHtml(JSON.stringify(value ?? {}));
+    }
+
+    function flattenPurposes(items, parentLabel = "") {
+      return (items || []).flatMap((item) => {
+        const label = item.parentLabel || parentLabel || "";
+        if (item.children?.length) return flattenPurposes(item.children, item.label);
+        return [{ ...item, parentLabel: item.parentLabel || label }];
+      });
+    }
+
+    function purposeGroups() {
+      return (visitBootstrap.purposes || []).map((item) => ({
+        value: item.value,
+        label: item.label,
+        children: item.children?.length ? item.children.map((child) => ({ ...child, parentLabel: item.label })) : [item],
+      }));
+    }
+
+    function renderPurposeOptions(selectedValue = "") {
+      const groups = purposeGroups();
+      if (!groups.length) return `<div class="picker-empty">暂无可选拜访目的</div>`;
+      const selectedGroup = groups.find((group) => group.children.some((item) => item.value === selectedValue));
+      const currentGroupValue = activePurposeGroup || selectedGroup?.value || groups[0].value;
+      const currentGroup = groups.find((group) => group.value === currentGroupValue) || groups[0];
+      return `<div class="purpose-left">
+          ${groups.map((group) => {
+            const hasChildren = group.children.length > 1 || group.children[0]?.value !== group.value;
+            const checked = group.children.some((item) => item.value === selectedValue);
+            return `<button class="purpose-tab ${group.value === currentGroup.value ? "active" : ""}" type="button" data-purpose-group="${escapeHtml(group.value)}">
+              <span>${escapeHtml(group.label)}</span>
+              ${checked ? `<span class="check">✓</span>` : hasChildren ? `<span class="chevron">›</span>` : ""}
+            </button>`;
+          }).join("")}
+        </div>
+        <div class="purpose-right">
+          ${currentGroup.children.map((purpose) => `<button class="purpose-choice ${purpose.value === selectedValue ? "active" : ""}" type="button" data-picker-field="visitPurpose" data-picker-value='${escapeJson(purpose)}'>
+            <span>${escapeHtml(purpose.label)}</span>
+            ${purpose.value === selectedValue ? `<span class="check">✓</span>` : ""}
+          </button>`).join("")}
+        </div>`;
+    }
+
+    function customerTypeLabel(type) {
+      return {
+        ad_customer: "广告客户",
+        agent: "广告代理商",
+        store: "门店",
+        provider: "团购服务商",
+      }[type] || "客户";
+    }
+
+    function renderCustomerOptions(items = [], query = "") {
+      if (!items.length) {
+        return `<div class="picker-empty">未找到“${escapeHtml(query || "当前条件")}”对应的客户，请输入更精确的名称</div>`;
+      }
+      return items.map((item) => {
+        const objectType = item.objectType || item.objectTypes?.[0] || "ad_customer";
+        const id = item.id || item.licenseNo || item.agentId || item.providerId || item.poiId;
+        const name = item.name || item.corporationName || item.agentName || item.providerName || item.poiName;
+        const payload = {
+          // 使用 Milvus 中的稳定主键和标准名称，提交后端时不再二次猜测客户。
+          id,
+          name,
+          objectType,
+          visitObjectType: objectType,
+          displayName: name,
+          corporationName: name,
+          licenseName: name,
+          licenseNo: id,
+          licenseCode: id,
+          regCity: item.city || item.regCity || "",
+          address: item.address || "",
+        };
+        const score = Number.isFinite(Number(item.similarity))
+          ? ` · 相似度 ${Number(item.similarity).toFixed(3)}`
+          : "";
+        const meta = [customerTypeLabel(objectType), item.city || item.regCity, item.address]
+          .filter(Boolean).join(" · ");
+        return `<button class="picker-option" type="button" data-picker-field="visitObjectInfo" data-picker-value='${escapeJson(payload)}'>
+          <strong>${escapeHtml(name)}</strong>
+          <span>${escapeHtml(meta + score)}</span>
+        </button>`;
+      }).join("");
+    }
+
+    // 仅作为接口异常时的降级数据；正常输入必须走后端 Milvus 向量检索。
+    function renderLicenseOptions(query = "", card = document) {
+      const normalized = query.trim().toLowerCase();
+      if (!normalized) return "";
+      const objectType = card.querySelector(".plan-form-card")?.dataset.objectType || "";
+      const matched = visitBootstrap.licenses
+        .filter((item) => !objectType || item.objectTypes?.includes(objectType))
+        .filter((item) => [item.corporationName, item.licenseNo, item.regCity, item.agentName, item.providerName]
+          .some((value) => String(value || "").toLowerCase().includes(normalized)))
+        .slice(0, 5);
+      return renderCustomerOptions(matched, query);
+    }
+
+    function scheduleCustomerSearch(query, card, immediate = false) {
+      window.clearTimeout(customerSearchTimer);
+      const list = card.querySelector('[data-picker-list="visitObjectInfo"]');
+      if (!list) return;
+      const requestId = ++customerSearchRequest;
+      list.innerHTML = `<div class="picker-empty">正在从 Milvus 检索客户…</div>`;
+      list.classList.add("open");
+
+      customerSearchTimer = window.setTimeout(async () => {
+        try {
+          // 默认跨类型召回。候选自带 objectType，选中后同步修正表单对象类型。
+          const params = new URLSearchParams({ q: query.trim(), limit: "8" });
+          const data = await api(`/api/visit/customers/search?${params}`);
+          if (requestId !== customerSearchRequest || !list.isConnected) return;
+          list.innerHTML = renderCustomerOptions(data.list || [], query);
+        } catch (error) {
+          if (requestId !== customerSearchRequest || !list.isConnected) return;
+          const fallback = renderLicenseOptions(query, card);
+          list.innerHTML = fallback || `<div class="picker-empty">客户检索失败：${escapeHtml(error.message || "服务不可用")}</div>`;
+        }
+      }, immediate ? 0 : 250);
+    }
+
+    function renderAddressOptions(query = "") {
+      const normalized = query.trim().toLowerCase();
+      if (!normalized) return "";
+      const matched = visitBootstrap.addresses
+        .filter((item) => {
+          if (!normalized) return true;
+          return [item.poiName, item.address, item.city, item.district]
+            .some((value) => String(value || "").toLowerCase().includes(normalized));
+        })
+        .slice(0, 5);
+      if (!matched.length) return `<div class="picker-empty">未匹配到地址，可继续输入后直接提交</div>`;
+      return matched.map((item) => {
+        const payload = {
+          address: item.poiName,
+          poiName: item.poiName,
+          detailAddress: item.address,
+          city: item.city,
+          district: item.district,
+          longitude: item.longitude,
+          latitude: item.latitude,
+        };
+        return `<button class="picker-option" type="button" data-picker-field="planVisitAddress" data-picker-value='${escapeJson(payload)}'>
+          <strong>${escapeHtml(item.poiName)}</strong>
+          <span>${escapeHtml(item.district)} · ${escapeHtml(item.address)}</span>
+        </button>`;
+      }).join("");
+    }
+
+    function refreshPickers(card = document) {
+      const purposeList = card.querySelector('[data-picker-list="visitPurpose"]');
+      const purposeInput = card.querySelector('[data-picker-input="visitPurpose"]');
+      if (purposeList) purposeList.innerHTML = renderPurposeOptions(readResolvedValue(purposeInput)?.value || "");
+      const licenseInput = card.querySelector('[data-picker-input="visitObjectInfo"]');
+      const licenseList = card.querySelector('[data-picker-list="visitObjectInfo"]');
+      if (licenseList && licenseInput?.value) scheduleCustomerSearch(licenseInput.value, card, true);
+      const addressInput = card.querySelector('[data-picker-input="planVisitAddress"]');
+      const addressList = card.querySelector('[data-picker-list="planVisitAddress"]');
+      if (addressList) addressList.innerHTML = renderAddressOptions(addressInput?.value || "");
+    }
+
+	    function renderCardBody(response) {
+	      const card = response.card || {};
+	      if (card.type === "create-form") return renderCreateForm(card.data || {});
+	      if (card.type === "enable-location") return renderEnableLocation();
+	      if (card.type === "checkin-plans") return renderCheckinPlans(card.data || {});
+	      if (card.type === "checkin-card") return renderCheckinCard(card.data || {});
+	      if (card.type === "checkin-success") return renderCheckinSuccess(card.data || {}, card.actions || []);
+	      if (["checkout-plans", "log-plans", "cancel-plans"].includes(card.type)) return renderWorkflowPlans(card.type, card.data || {});
+	      if (card.type === "checkout-precheck" || card.type === "checkout-confirm") return renderCheckout(card.type, card.data || {});
+	      if (card.type === "visit-log") return renderVisitLog(card.data || {});
+	      if (card.type === "recording") return renderRecording(card.data || {});
+	      if (card.type === "recording-processing") return renderRecordingProcessing(card.data || {});
+	      if (card.type === "recording-complete") return renderRecordingComplete(card.data || {});
+	      if (card.type === "recording-failed") return renderRecordingFailed(card.data || {});
+	      if (["checkout-success", "log-success", "review-pending", "canceled"].includes(card.type)) return renderWorkflowResult(card.type, card.data || {});
+	      if (card.type === "ask" || card.type === "candidates") return renderCandidates(response);
+      if (card.type === "confirm" || card.type === "success") return renderSummary(response);
+      if (card.type === "error") return `<div class="error-card">${escapeHtml(response.message || card.data?.message || "处理失败")}</div>`;
+      return `<div class="hint">${escapeHtml(response.message || "")}</div>`;
+    }
+
+    function toDateTimeLocal(value) {
+      if (!value) return "";
+      return String(value).replace(" ", "T").slice(0, 16);
+    }
+
+	    function renderCreateForm(data = {}) {
+      const slots = data.slots || {};
+      const mode = data.mode === "edit" ? "edit" : "create";
+      const isEdit = mode === "edit";
+      const visitType = slots.visitType || "";
+      const objectType = slots.visitObjectType || "";
+      const customerType = slots.customerType || "";
+      const adIsTarget = slots.adIsTarget?.isTargetCustomer === true ? "yes" : slots.adIsTarget?.isTargetCustomer === false ? "no" : "";
+      const visitObjectInfo = slots.visitObjectInfo || null;
+      const visitPurpose = slots.visitPurpose || null;
+      const planVisitAddress = slots.planVisitAddress || null;
+      return `<div class="plan-form-card" data-form-mode="${escapeHtml(mode)}" data-plan-id="${escapeHtml(data.visitPlanId || "")}" data-visit-type="${escapeHtml(visitType)}" data-object-type="${escapeHtml(objectType)}" data-customer-type="${escapeHtml(customerType)}">
+        <div class="plan-form-scroll">
+          <div class="plan-form-title">
+            <h2>${isEdit ? "修改拜访计划" : "创建拜访计划"}</h2>
+            <p>${isEdit ? "调整需要变更的信息，保存后会更新当前计划" : "好，补充完整的拜访信息，我直接帮你创建"}</p>
+          </div>
+
+          <div class="plan-field-group">
+            <div class="plan-label">拜访类型</div>
+            <div class="pill-row" data-pill-group="visitType">
+              <button class="pill-option ${visitType === "local" ? "active" : ""}" type="button" data-pill-value="local">本地拜访</button>
+              <button class="pill-option ${visitType === "travel" ? "active" : ""}" type="button" data-pill-value="travel">差旅拜访</button>
+            </div>
+            <input hidden data-form-field="visitType" value="${escapeHtml(visitType)}" />
+          </div>
+
+          <div class="plan-field-group">
+            <div class="plan-label">拜访对象</div>
+            <div class="pill-row" data-pill-group="visitObjectType">
+              <button class="pill-option ${objectType === "ad_customer" ? "active" : ""}" type="button" data-pill-value="ad_customer">广告客户</button>
+              <button class="pill-option ${objectType === "agent" ? "active" : ""}" type="button" data-pill-value="agent">广告代理商</button>
+              <button class="pill-option ${objectType === "store" ? "active" : ""}" type="button" data-pill-value="store">门店</button>
+              <button class="pill-option ${objectType === "provider" ? "active" : ""}" type="button" data-pill-value="provider">团购服务商</button>
+            </div>
+            <input hidden data-form-field="visitObjectType" value="${escapeHtml(objectType)}" />
+          </div>
+
+          <div class="plan-field-group" data-customer-type-field>
+            <div class="plan-label">客户类型</div>
+            <div class="pill-row" data-pill-group="customerType">
+              <button class="pill-option ${customerType === "new" ? "active" : ""}" type="button" data-pill-value="new">新客</button>
+              <button class="pill-option ${customerType === "old" ? "active" : ""}" type="button" data-pill-value="old">老客</button>
+            </div>
+            <input hidden data-form-field="customerType" value="${escapeHtml(customerType)}" />
+          </div>
+
+          <div class="plan-field-group" data-business-license-field>
+            <div class="plan-label">营业执照</div>
+	            <label class="select-shell"><input data-form-field="visitObjectInfo" data-picker-input="visitObjectInfo" placeholder="请输入营业执照名称或编号" value="${escapeHtml(inputDisplay(visitObjectInfo))}" ${visitObjectInfo ? `data-resolved-value='${escapeJson(visitObjectInfo)}'` : ""} /><span class="select-icon">⌄</span></label>
+            <div class="suggestion-picker" data-picker-list="visitObjectInfo"></div>
+          </div>
+
+          <div class="plan-field-group" data-store-field>
+            <div class="plan-label">门店信息</div>
+	            <label class="select-shell"><input data-form-field="visitObjectInfo" placeholder="请选择或输入门店" value="${escapeHtml(inputDisplay(visitObjectInfo))}" ${visitObjectInfo ? `data-resolved-value='${escapeJson(visitObjectInfo)}'` : ""} /><span class="select-icon">⌄</span></label>
+          </div>
+
+          <div class="plan-field-group" data-target-field>
+            <div class="plan-label">靶向新客</div>
+            <div class="pill-row" data-pill-group="adIsTarget">
+              <button class="pill-option ${adIsTarget === "yes" ? "active" : ""}" type="button" data-pill-value="yes">是</button>
+              <button class="pill-option ${adIsTarget === "no" ? "active" : ""}" type="button" data-pill-value="no">否</button>
+            </div>
+            <input hidden data-form-field="adIsTarget" value="${escapeHtml(adIsTarget === "yes" ? "是" : adIsTarget === "no" ? "否" : "")}" ${slots.adIsTarget ? `data-resolved-value='${escapeJson(slots.adIsTarget)}'` : ""} />
+          </div>
+
+          <div class="plan-field-group">
+            <div class="plan-label">拜访目的</div>
+	            <label class="select-shell"><input data-form-field="visitPurpose" data-picker-input="visitPurpose" placeholder="请选择" readonly value="${escapeHtml(inputDisplay(visitPurpose))}" ${visitPurpose ? `data-resolved-value='${escapeJson(visitPurpose)}'` : ""} /><span class="select-icon">⌄</span></label>
+            <div class="inline-picker purpose-picker" data-picker-list="visitPurpose">${renderPurposeOptions(visitPurpose?.value || "")}</div>
+          </div>
+
+          <div class="plan-field-group">
+            <div class="plan-label">计划拜访时间</div>
+            <label class="select-shell"><input data-form-field="planVisitTime" type="datetime-local" required value="${escapeHtml(toDateTimeLocal(slots.planVisitTime))}" /><span class="select-icon">▣</span></label>
+          </div>
+
+          <div class="plan-field-group">
+            <div class="plan-label">计划拜访地点</div>
+	            <label class="select-shell"><input data-form-field="planVisitAddress" data-picker-input="planVisitAddress" placeholder="请输入地址关键词" value="${escapeHtml(inputDisplay(planVisitAddress))}" ${planVisitAddress ? `data-resolved-value='${escapeJson(planVisitAddress)}'` : ""} /><span class="select-icon">⌄</span></label>
+            <div class="suggestion-picker" data-picker-list="planVisitAddress"></div>
+          </div>
+
+          <div class="plan-field-group" data-travel-field>
+            <div class="plan-label">差旅单号</div>
+            <label class="select-shell"><input data-form-field="travelApplyNo" placeholder="差旅拜访必填" value="${escapeHtml(slots.travelApplyNo || "")}" /><span class="select-icon">⌄</span></label>
+          </div>
+
+          <div class="plan-form-footer">
+            <button class="create-plan-btn" data-submit-form type="button" disabled>${isEdit ? "保存修改" : "创建计划"}</button>
+            <div class="feedback-row" aria-hidden="true"><span>♡</span><span>♧</span></div>
+          </div>
+        </div>
+	      </div>`;
+	    }
+
+	    function renderEnableLocation() {
+	      return `<div class="section">
+	          <div class="checkin-hero">
+	            <small>位置授权</small>
+	            <b>签到需要先确认当前位置</b>
+	            <span class="hint">本地演示会使用融泽嘉园附近坐标模拟定位，真实 App 环境可替换为系统定位。</span>
+	          </div>
+	          <div class="actions">
+	            <button class="btn primary full" data-action="enable-location" type="button">开启定位</button>
+	          </div>
+	        </div>`;
+	    }
+
+	    function distanceLabel(value) {
+	      if (value === null || value === undefined || value === "") return "暂无距离";
+	      const num = Number(value);
+	      if (!Number.isFinite(num)) return String(value);
+	      return num >= 1000 ? `${(num / 1000).toFixed(1)}公里` : `${Math.round(num)}米`;
+	    }
+
+	    function renderCheckinPlans(data = {}) {
+	      const items = data.items || [];
+	      return `<div class="section">
+	          <div class="hint">共找到 ${items.length} 条今日待签到计划，优先展示距离更近的计划。</div>
+	          <div class="checkin-plan-list">
+	            ${items.map((item) => `<button class="checkin-plan-item" type="button" data-checkin-plan="${escapeHtml(item.visitPlanId)}">
+	              <strong>${escapeHtml(item.customerName || "未命名客户")}</strong>
+	              <span>${escapeHtml(item.customerTypeLabel || "拜访对象")} · ${escapeHtml(item.planVisitTimeLabel || item.planVisitTime || "")}</span>
+	              <span>${escapeHtml(item.planVisitAddress || "")}</span>
+	              <span>${escapeHtml(item.distanceLabel || distanceLabel(item.distance))}</span>
+	            </button>`).join("")}
+	          </div>
+	        </div>`;
+	    }
+
+	    function renderCheckinCard(data = {}) {
+	      const outOfRange = Boolean(data.isTargetOutOfRange);
+	      return `<div class="section">
+	          <div class="checkin-hero">
+	            <small>${escapeHtml(data.visitTarget?.label || "拜访计划")}</small>
+	            <b>${escapeHtml(data.clientName || "待签到客户")}</b>
+	            <span class="hint">${escapeHtml(data.planVisitTime || "")} · ${escapeHtml(data.planVisitAddress || "")}</span>
+	          </div>
+	          <div class="distance-row">
+	            <div class="distance-tile ${outOfRange ? "warn" : ""}">
+	              <span>当前位置距离</span>
+	              <b>${escapeHtml(distanceLabel(data.currentDistance))}</b>
+	            </div>
+	            <div class="distance-tile">
+	              <span>签到范围</span>
+	              <b>${escapeHtml(distanceLabel(data.rangeLimit || 1000))}</b>
+	            </div>
+	          </div>
+	          <div class="summary-grid">
+	            <div class="kv"><span>当前位置</span><b>${escapeHtml(data.currentAddress || "当前位置")}</b></div>
+	            <div class="kv"><span>拜访目的</span><b>${escapeHtml(data.visitPurpose || "-")}</b></div>
+	            <div class="kv"><span>计划 ID</span><b>${escapeHtml(data.visitPlanId || "-")}</b></div>
+	          </div>
+	          ${outOfRange ? `<div class="checkin-status-strip">当前位置超出建议签到范围，仍可继续演示拍照签到。</div>` : ""}
+	          <div class="actions">
+	            <button class="btn primary full" data-action="photo-check-in" data-plan-id="${escapeHtml(data.visitPlanId || "")}" type="button" ${data.buttonDisabled ? "disabled" : ""}>${escapeHtml(data.rightBtnText || "拍照签到")}</button>
+	            <button class="btn full" data-action="switch-plan" type="button">切换计划</button>
+	          </div>
+	        </div>`;
+	    }
+
+	    function renderCheckinSuccess(data = {}, actions = []) {
+	      return `<div class="section">
+	          <div class="checkin-hero">
+	            <small>签到成功</small>
+	            <b>${escapeHtml(data.clientName || "拜访计划")}</b>
+	            <span class="hint">${escapeHtml(data.checkinTime || "")} · ${escapeHtml(data.checkinAddress || "")}</span>
+	          </div>
+	          <div class="summary-grid">
+	            <div class="kv"><span>计划 ID</span><b>${escapeHtml(data.visitPlanId || data.visitId || "-")}</b></div>
+	            <div class="kv"><span>计划时间</span><b>${escapeHtml(data.planVisitTime || "-")}</b></div>
+	            <div class="kv"><span>计划地点</span><b>${escapeHtml(data.planVisitAddress || "-")}</b></div>
+	          </div>
+	        </div>
+	        ${actions.length ? `<div class="section"><div class="actions">${actions.map((action) => `<button class="btn ${action.primary ? "primary" : ""} full" data-action="${escapeHtml(action.id)}" data-plan-id="${escapeHtml(data.visitPlanId || data.visitId || "")}" type="button">${escapeHtml(action.label)}</button>`).join("")}</div></div>` : ""}`;
+	    }
+
+	    function renderWorkflowPlans(type, data = {}) {
+	      const items = data.items || [];
+	      const kind = type === "checkout-plans" ? "checkout" : type === "cancel-plans" ? "cancel" : "log";
+	      return `<div class="section">
+	          <div class="hint">共找到 ${items.length} 条可处理计划。</div>
+	          <div class="checkin-plan-list">
+	            ${items.map((item) => `<button class="checkin-plan-item" type="button" data-workflow-plan="${escapeHtml(item.visitPlanId)}" data-workflow-kind="${kind}">
+	              <strong>${escapeHtml(item.customerName || "未命名客户")}</strong>
+	              <span>${escapeHtml(item.planVisitTime || "")} · ${escapeHtml(item.planVisitAddress || "")}</span>
+	              <span>当前状态：${escapeHtml(item.status || "-")}</span>
+	            </button>`).join("") || `<div class="picker-empty">暂无可处理计划</div>`}
+	          </div>
+	        </div>`;
+	    }
+
+	    function renderCheckout(type, data = {}) {
+	      const ready = type === "checkout-confirm" && data.canCheckout !== false;
+	      return `<div class="section">
+	          <div class="checkin-hero"><small>签退计划</small><b>${escapeHtml(data.customerName || "拜访计划")}</b><span class="hint">${escapeHtml(data.planVisitAddress || "")}</span></div>
+	          <div class="summary-grid">
+	            <div class="kv"><span>计划 ID</span><b>${escapeHtml(data.visitPlanId || "-")}</b></div>
+	            <div class="kv"><span>签到时间</span><b>${escapeHtml(data.checkinTime || "-")}</b></div>
+	            ${type === "checkout-confirm" ? `<div class="kv"><span>预校验</span><b>${ready ? "通过" : escapeHtml(data.reason || data.message || "未通过")}</b></div>` : ""}
+	          </div>
+	          <div class="actions">
+	            ${type === "checkout-precheck" ? `<button class="btn primary full" data-action="checkout-precheck" data-plan-id="${escapeHtml(data.visitPlanId || "")}" type="button">签退预校验</button>` : ""}
+	            ${ready ? `<button class="btn primary full" data-action="checkout-submit" data-plan-id="${escapeHtml(data.visitPlanId || "")}" type="button">确认签退</button>` : ""}
+	            ${type === "checkout-confirm" && !ready && (data.abnormalTags || []).includes("checkout_expired") ? `<button class="btn primary full" data-action="checkout-supplement" data-plan-id="${escapeHtml(data.visitPlanId || "")}" type="button">补录签退</button>` : ""}
+	            <button class="btn full" data-checkout-start type="button">切换计划</button>
+	          </div>
+	        </div>`;
+	    }
+
+	    function renderVisitLog(data = {}) {
+	      const contacts = data.contacts || {};
+	      const firstContact = Array.isArray(contacts) ? (contacts[0] || {}) : contacts;
+	      return `<div class="section" data-log-form data-plan-id="${escapeHtml(data.visitPlanId || "")}">
+	          <div class="checkin-hero"><small>${data.mode === "edit" ? "修改日志" : "填写日志"}</small><b>${escapeHtml(data.customerName || "拜访计划")}</b><span class="hint">${escapeHtml(data.planVisitAddress || "")}</span></div>
+	          <div class="form-grid">
+	            <label class="field"><span>联系人</span><input data-log-contact-name value="${escapeHtml(firstContact.name || "")}" placeholder="例如：张经理" /></label>
+	            <label class="field"><span>手机号</span><input data-log-contact-phone value="${escapeHtml(firstContact.phone || "")}" placeholder="选填" /></label>
+	            <label class="field" style="grid-template-columns:1fr"><span>拜访纪要</span><textarea data-log-summary placeholder="请输入本次拜访结果、结论和待办">${escapeHtml(data.visitSummary || "")}</textarea></label>
+	          </div>
+	          <div class="actions"><button class="btn primary full" data-action="log-submit" type="button">保存拜访日志</button></div>
+	        </div>`;
+	    }
+
+	    function renderRecording(data = {}) {
+	      return `<div class="section" data-recording-id="${escapeHtml(data.id || data.recordingId || "")}">
+	          <div class="checkin-hero"><small>录音中</small><b>录音任务 #${escapeHtml(data.id || data.recordingId || "-")}</b><span class="hint">正在采集 16k 单声道音频；停止后上传 OSS 并自动转写、生成纪要。</span></div>
+	          <div class="hint" data-recording-state>等待麦克风授权…</div>
+	          <div class="actions"><button class="btn primary full" data-action="recording-stop" type="button">停止录音并生成纪要</button></div>
+	        </div>`;
+	    }
+
+	    function renderRecordingProcessing(data = {}) {
+	      return `<div class="section" data-recording-processing-id="${escapeHtml(data.id || data.recordingId || "")}"><div class="checkin-hero"><small>异步任务</small><b>纪要正在生成</b><span class="hint">任务 #${escapeHtml(data.id || data.recordingId || "-")} · 状态 ${escapeHtml(data.status || "PROCESSING")}</span></div></div>`;
+	    }
+
+	    function renderRecordingComplete(data = {}) {
+	      return `<div class="section"><div class="checkin-hero"><small>生成完成</small><b>拜访纪要已生成</b><span class="hint">录音任务 #${escapeHtml(data.id || data.recordingId || "-")}</span></div>
+	        <div class="summary-grid">
+	          <div class="kv"><span>拜访纪要</span><b>${escapeHtml(data.summary || "暂无纪要")}</b></div>
+	          <div class="kv"><span>录音转写</span><b>${escapeHtml(data.transcript || "暂无转写")}</b></div>
+	        </div></div>`;
+	    }
+
+	    function renderRecordingFailed(data = {}) {
+	      const waiting = data.status === "WAITING_EXTERNAL";
+	      return `<div class="section"><div class="checkin-hero"><small>${waiting ? "等待处理" : "生成失败"}</small><b>${waiting ? "暂未获得有效转写" : "拜访纪要生成失败"}</b><span class="hint">任务 #${escapeHtml(data.id || data.recordingId || "-")} · ${escapeHtml(data.errorMessage || (waiting ? "录音识别未返回文本，请重新录制" : "请稍后重试"))}</span></div></div>`;
+	    }
+
+	    async function pollRecording(recordingId, cardElement) {
+	      const key = String(recordingId);
+	      if (recordingPolls.has(key)) return recordingPolls.get(key);
+	      const polling = (async () => {
+	        for (let attempt = 0; attempt < 300; attempt += 1) {
+	          if (attempt) await new Promise((resolve) => setTimeout(resolve, 2000));
+	          try {
+	            const data = await api(`/api/visit/recordings/${encodeURIComponent(key)}`);
+	            const status = String(data.status || "").toUpperCase();
+	            const target = cardElement?.querySelector(".card-body") || cardElement;
+	            if (status === "COMPLETED") {
+	              if (target) target.innerHTML = renderRecordingComplete(data);
+	              flowHint.textContent = "拜访纪要已生成";
+	              await refreshHistory();
+	              return data;
+	            }
+	            if (status === "FAILED" || status === "WAITING_EXTERNAL") {
+	              if (target) target.innerHTML = renderRecordingFailed(data);
+	              flowHint.textContent = status === "FAILED" ? "拜访纪要生成失败" : "录音未获得有效转写";
+	              return data;
+	            }
+	            const hint = cardElement?.querySelector(".hint");
+	            if (hint) hint.textContent = `任务 #${key} · 状态 ${status || "PROCESSING"}`;
+	          } catch (error) {
+	            if (attempt >= 4) {
+	              const target = cardElement?.querySelector(".card-body") || cardElement;
+	              if (target) target.innerHTML = renderRecordingFailed({ id: key, status: "FAILED", errorMessage: error.message || "查询任务状态失败" });
+	              return null;
+	            }
+	          }
+	        }
+	        const target = cardElement?.querySelector(".card-body") || cardElement;
+	        if (target) target.innerHTML = renderRecordingFailed({ id: key, status: "FAILED", errorMessage: "生成超时，请稍后重新查看" });
+	        return null;
+	      })().finally(() => recordingPolls.delete(key));
+	      recordingPolls.set(key, polling);
+	      return polling;
+	    }
+
+	    function renderWorkflowResult(type, data = {}) {
+	      const labels = { "checkout-success": "签退成功", "log-success": "日志已保存", "review-pending": "已提交审核", canceled: "计划已取消" };
+	      return `<div class="section">
+	          <div class="checkin-hero"><small>${labels[type] || "操作成功"}</small><b>${escapeHtml(data.customerName || "拜访计划")}</b><span class="hint">计划 ID：${escapeHtml(data.visitPlanId || "-")}</span></div>
+	          ${data.visitSummary ? `<div class="summary-grid"><div class="kv"><span>拜访纪要</span><b>${escapeHtml(data.visitSummary)}</b></div></div>` : ""}
+	          <div class="actions">
+	            ${type === "checkout-success" ? `<button class="btn primary full" data-action="log-start-plan" data-plan-id="${escapeHtml(data.visitPlanId || "")}" type="button">填写拜访日志</button>` : ""}
+	            ${type === "log-success" ? `<button class="btn primary full" data-action="review-submit" data-plan-id="${escapeHtml(data.visitPlanId || "")}" type="button">提交审核</button>` : ""}
+	          </div>
+	        </div>`;
+	    }
+
+    function renderCandidates(response) {
+      const card = response.card || {};
+      const candidates = card.candidates || [];
+      const slotName = card.data?.slotName || response.session?.pendingCandidateSlot || response.session?.waitingFor?.[0] || "";
+      const inlineField = slotName === "planVisitTime"
+        ? `<label class="field"><span>拜访时间</span><div class="select-shell"><input data-inline-slot="planVisitTime" type="datetime-local" required /><span class="select-icon">▣</span></div></label>`
+        : `<label class="field"><span>${escapeHtml(FIELD_LABELS[slotName] || "补充信息")}</span><input data-inline-slot="${escapeHtml(slotName)}" placeholder="请输入" /></label>`;
+      return `<div class="section">
+          ${response.message ? `<div class="hint">${escapeHtml(response.message)}</div>` : ""}
+          ${candidates.length ? `<div class="candidate-list">${candidates.map((item) => `
+          <button class="candidate" type="button" data-candidate-slot="${escapeHtml(slotName)}" data-candidate='${escapeHtml(JSON.stringify(item.payload))}'>
+            <b>${escapeHtml(item.title)}</b>
+            ${item.subtitle ? `<span>${escapeHtml(item.subtitle)}</span>` : ""}
+            <span class="candidate-meta"><em class="mini-chip">${escapeHtml(FIELD_LABELS[slotName] || "候选项")}</em><em class="mini-chip">${escapeHtml(candidateMetaText(item, slotName))}</em></span>
+          </button>`).join("")}</div>` : ""}
+          ${!candidates.length ? `<div class="form-grid">${inlineField}<div class="actions"><button class="btn primary full" data-submit-inline type="button">提交</button></div></div>` : ""}
+        </div>`;
+    }
+
+    function renderSummary(response) {
+      const data = response.card?.data || {};
+      const rows = [
+        ["visitType", "拜访形式"],
+        ["visitObjectType", "对象类型"],
+        ["customerType", "客户类型"],
+        ["customerName", "拜访对象"],
+        ["licenseNo", "营业执照"],
+        ["visitPurpose", "拜访目的"],
+        ["planTime", "拜访时间"],
+        ["planAddress", "拜访地址"],
+        ["travelApplyNo", "差旅单号"],
+        ["adIsTarget", "靶向新客"],
+        ["visitPlanId", "计划 ID"],
+      ].filter(([key]) => display(data[key]) !== "-");
+      const actions = response.card?.actions || [];
+      const summaryStatus = response.card?.type === "success"
+        ? data.mode === "edit" ? "修改成功" : "创建成功"
+        : data.mode === "edit" ? "待确认修改" : "待确认计划";
+      return `<div class="section">
+          <div class="summary-hero"><small>${summaryStatus}</small><b>${escapeHtml(display(data.customerName || "拜访计划"))}</b></div>
+          <div class="summary-grid">${rows.map(([key, label]) => `<div class="kv"><span>${label}</span><b>${escapeHtml(display(data[key]))}</b></div>`).join("")}</div>
+        </div>
+        ${actions.length ? `<div class="section"><div class="actions">${actions.map((action) => `<button class="btn ${action.primary ? "primary" : ""} full" data-action="${escapeHtml(action.id)}" data-plan-id="${escapeHtml(data.visitPlanId || "")}" data-action-label="${escapeHtml(action.label)}" type="button">${escapeHtml(action.label)}</button>`).join("")}</div></div>` : ""}`;
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error("请先返回 New-Agent 首页登录，再打开拜访助手");
+        }
+        throw new Error(data.message || data.error || `请求失败（${data.code || res.status}）`);
+      }
+      return data;
+    }
+
+    async function callFlow(path, body) {
+      stateChip.textContent = "处理中";
+      try {
+        const payload = { ...(body || {}) };
+        if (activeConversationId && !payload.conversationId) payload.conversationId = activeConversationId;
+        const data = await api(path, { method: "POST", body: JSON.stringify(payload) });
+        if (data.conversation?.id) activeConversationId = data.conversation.id;
+        if (data.session?.id) activeSessionId = data.session.id;
+        addMessage("assistant", data.message);
+        addCard(data);
+        flowHint.textContent = `当前状态：${data.session?.fsmState || "空闲"}`;
+        await refreshHistory();
+        return data;
+      } catch (err) {
+        addMessage("assistant", err.message);
+      } finally {
+        stateChip.textContent = "空闲";
+      }
+    }
+
+    function downsampleTo16k(samples, sourceRate) {
+      if (sourceRate === 16000) return Int16Array.from(samples, (value) => Math.max(-1, Math.min(1, value)) * 0x7fff);
+      const ratio = sourceRate / 16000;
+      const result = new Int16Array(Math.round(samples.length / ratio));
+      for (let index = 0; index < result.length; index += 1) {
+        const start = Math.round(index * ratio);
+        const end = Math.max(start + 1, Math.round((index + 1) * ratio));
+        let total = 0;
+        for (let cursor = start; cursor < end && cursor < samples.length; cursor += 1) total += samples[cursor];
+        const value = Math.max(-1, Math.min(1, total / (end - start)));
+        result[index] = value < 0 ? value * 0x8000 : value * 0x7fff;
+      }
+      return result;
+    }
+
+    async function openPcmCapture(onChunk) {
+      const media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
+      const context = new AudioContext();
+      const source = context.createMediaStreamSource(media);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const sink = context.createGain();
+      sink.gain.value = 0;
+      processor.onaudioprocess = (event) => onChunk(downsampleTo16k(event.inputBuffer.getChannelData(0), context.sampleRate));
+      source.connect(processor); processor.connect(sink); sink.connect(context.destination);
+      return { media, context, source, processor, sink };
+    }
+
+    async function closePcmCapture(capture) {
+      if (!capture) return;
+      capture.processor.disconnect(); capture.source.disconnect(); capture.sink.disconnect();
+      capture.media.getTracks().forEach((track) => track.stop());
+      await capture.context.close();
+    }
+
+    function wavBlob(chunks) {
+      const samples = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const buffer = new ArrayBuffer(44 + samples * 2);
+      const view = new DataView(buffer);
+      const write = (offset, value) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+      write(0, "RIFF"); view.setUint32(4, 36 + samples * 2, true); write(8, "WAVE"); write(12, "fmt ");
+      view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+      write(36, "data"); view.setUint32(40, samples * 2, true);
+      let offset = 44;
+      chunks.forEach((chunk) => { for (const sample of chunk) { view.setInt16(offset, sample, true); offset += 2; } });
+      return new Blob([buffer], { type: "audio/wav" });
+    }
+
+    async function blobBase64(blob) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+      return btoa(binary);
+    }
+
+    async function startVisitAudio(recordingId) {
+      const chunks = [];
+      const capture = await openPcmCapture((chunk) => chunks.push(chunk));
+      visitRecording = { recordingId: String(recordingId), chunks, capture };
+      document.querySelector(`[data-recording-id="${CSS.escape(String(recordingId))}"] [data-recording-state]`)?.replaceChildren("麦克风已连接，正在录音…");
+    }
+
+    async function finishVisitAudio(recordingId) {
+      if (!visitRecording || visitRecording.recordingId !== String(recordingId)) return "";
+      const current = visitRecording; visitRecording = null;
+      await closePcmCapture(current.capture);
+      const blob = wavBlob(current.chunks);
+      const upload = await api("/api/visit/asr/audio", { method: "POST", body: JSON.stringify({
+        recordingId, fileName: `visit-${recordingId}.wav`, contentType: "audio/wav", dataBase64: await blobBase64(blob),
+      }) });
+      return upload.data?.audioUrl || "";
+    }
+
+    async function startRealtimeInput() {
+      const button = $("#voiceBtn");
+      const capturePromise = openPcmCapture((chunk) => {
+        if (realtimeInput?.started && realtimeInput.socket.readyState === WebSocket.OPEN) realtimeInput.socket.send(chunk.buffer);
+      });
+      try {
+        const session = (await api("/api/visit/asr/realtime-session")).data;
+        const taskId = crypto.randomUUID().replaceAll("-", "");
+        const messageId = () => crypto.randomUUID().replaceAll("-", "");
+        const socket = new WebSocket(`${session.websocketUrl}?token=${encodeURIComponent(session.token)}`);
+        const capture = await capturePromise;
+        realtimeInput = { socket, capture, taskId, messageId, appKey: session.appKey, started: false, finalText: "" };
+        button.classList.add("recording"); button.title = "停止实时语音输入"; stateChip.textContent = "语音输入中";
+        socket.onopen = () => socket.send(JSON.stringify({ header: { appkey: session.appKey, message_id: messageId(), task_id: taskId, namespace: "SpeechTranscriber", name: "StartTranscription" }, payload: { format: "pcm", sample_rate: 16000, enable_intermediate_result: true, enable_punctuation_prediction: true, enable_inverse_text_normalization: true } }));
+        socket.onmessage = (event) => {
+          const message = JSON.parse(event.data);
+          const name = message.header?.name;
+          if (name === "TranscriptionStarted") realtimeInput.started = true;
+          if (name === "SentenceEnd") realtimeInput.finalText += message.payload?.result || "";
+          if (name === "TranscriptionResultChanged" || name === "SentenceEnd") input.value = realtimeInput.finalText + (name === "SentenceEnd" ? "" : (message.payload?.result || ""));
+          if (name === "TaskFailed") { addMessage("assistant", `实时语音识别失败：${message.header?.status_text || "服务异常"}`); stopRealtimeInput(false); }
+        };
+        socket.onerror = () => { addMessage("assistant", "实时语音连接失败，请检查 ASR 配置。"); stopRealtimeInput(false); };
+      } catch (error) {
+        const capture = await capturePromise.catch(() => null); await closePcmCapture(capture);
+        realtimeInput = null; button.classList.remove("recording"); stateChip.textContent = "空闲";
+        addMessage("assistant", error.message || "无法启动实时语音输入");
+      }
+    }
+
+    async function stopRealtimeInput(graceful = true) {
+      const current = realtimeInput; realtimeInput = null;
+      if (!current) return;
+      if (graceful && current.socket.readyState === WebSocket.OPEN) current.socket.send(JSON.stringify({ header: { appkey: current.appKey, message_id: current.messageId(), task_id: current.taskId, namespace: "SpeechTranscriber", name: "StopTranscription" }, payload: {} }));
+      await closePcmCapture(current.capture);
+      setTimeout(() => current.socket.close(), graceful ? 500 : 0);
+      $("#voiceBtn").classList.remove("recording"); $("#voiceBtn").title = "实时语音输入"; stateChip.textContent = "空闲";
+    }
+
+	    async function startCreate(message = "") {
+	      if (message) addMessage("user", message);
+	      await callFlow("/api/visit/create/start", { message, conversationId: activeConversationId });
+	    }
+
+	    function defaultLocation() {
+	      return {
+	        latitude: 40.047,
+	        longitude: 116.342,
+	        address: "北京市海淀区融泽嘉园中1号院附近",
+	      };
+	    }
+
+	    function looksLikeCheckin(text) {
+	      return /签到|打卡|开始拜访|到店|我到了|去签到/.test(text);
+	    }
+
+	    function looksLikeCheckout(text) { return /签退|结束拜访|离店/.test(text); }
+	    function looksLikeLog(text) { return /拜访日志|填写日志|修改日志|拜访纪要/.test(text); }
+	    function looksLikeCancel(text) { return /取消.*拜访|取消.*计划|撤销.*拜访/.test(text); }
+
+	    function looksLikePureCreateIntent(text) {
+	      const normalized = text.trim().replace(/[。！!？?，,\s]+$/g, "");
+	      return /^(我要|我想|帮我|请帮我|麻烦帮我)?(创建|新建|建立|新增|建)(一个)?拜访计划$/.test(normalized)
+	        || /^(创建|新建)拜访$/.test(normalized);
+	    }
+
+	    function looksLikeCreateRequest(text) {
+	      if (looksLikePureCreateIntent(text)) return true;
+	      let score = /创建|新建|建立|新增|拜访计划/.test(text) ? 2 : 0;
+	      if (/本地|出差/.test(text)) score += 1;
+	      if (/广告客户|代理商|服务商|门店|店铺/.test(text)) score += 1;
+	      if (/新客|老客/.test(text)) score += 1;
+	      if (/客户|公司|营业执照|执照/.test(text)) score += 1;
+	      if (/目的|客情|会议|驻场|培训|复盘|提案|审核/.test(text)) score += 1;
+	      if (/时间|今天|明天|后天|\d{1,2}[点时]/.test(text)) score += 1;
+	      if (/地点|地址|在.+(?:园|楼|大厦|中心|广场|店|院)/.test(text)) score += 1;
+	      return score >= 4;
+	    }
+
+	    async function startCheckin(message = "签到") {
+	      addMessage("user", message);
+	      await callFlow("/api/visit/checkin/start", { message, conversationId: activeConversationId });
+	    }
+
+	    async function startCheckout(message = "签退") {
+	      addMessage("user", message);
+	      await callFlow("/api/visit/checkout/start", { conversationId: activeConversationId });
+	    }
+
+	    async function startLog(message = "填写拜访日志") {
+	      addMessage("user", message);
+	      await callFlow("/api/visit/log/start", { conversationId: activeConversationId });
+	    }
+
+	    async function startCancel(message = "取消拜访计划") {
+	      addMessage("user", message);
+	      await callFlow("/api/visit/cancel/start", { conversationId: activeConversationId });
+	    }
+
+	    async function sendText(text) {
+	      addMessage("user", text);
+	      await callFlow("/api/visit/create/resolve", { sessionId: activeSessionId, conversationId: activeConversationId, text });
+    }
+
+    document.addEventListener("click", async (event) => {
+      const tab = event.target.closest("[data-tab-target]");
+      if (tab) {
+        switchTab(tab.dataset.tabTarget);
+        return;
+      }
+	      const start = event.target.closest("[data-start]");
+	      if (start) {
+	        await startCreate("创建拜访计划");
+	        return;
+	      }
+	      const checkinStart = event.target.closest("[data-checkin-start]");
+	      if (checkinStart) {
+	        await startCheckin("签到");
+	        return;
+	      }
+	      const checkoutStart = event.target.closest("[data-checkout-start]");
+	      if (checkoutStart) {
+	        await startCheckout("签退");
+	        return;
+	      }
+	      const logStart = event.target.closest("[data-log-start]");
+	      if (logStart) {
+	        await startLog("填写拜访日志");
+	        return;
+	      }
+	      const prompt = event.target.closest("[data-prompt]");
+      if (prompt) {
+        await startCreate(prompt.dataset.prompt);
+        return;
+      }
+      const candidate = event.target.closest("[data-candidate]");
+      if (candidate) {
+        const payload = JSON.parse(candidate.dataset.candidate || "{}");
+        const slotName = candidate.dataset.candidateSlot;
+        const title = candidate.querySelector("b")?.textContent || display(payload);
+        addMessage("user", title);
+        await callFlow("/api/visit/create/resolve", { sessionId: activeSessionId, conversationId: activeConversationId, slotName, value: payload, displayText: title });
+        return;
+      }
+      const purposeGroup = event.target.closest("[data-purpose-group]");
+      if (purposeGroup) {
+        const card = purposeGroup.closest(".card");
+        if (!card) return;
+        activePurposeGroup = purposeGroup.dataset.purposeGroup || "";
+        refreshPickers(card);
+        card.querySelector('[data-picker-list="visitPurpose"]')?.classList.add("open");
+        return;
+      }
+      const pickerOption = event.target.closest("[data-picker-value]");
+      if (pickerOption) {
+        const card = pickerOption.closest(".card");
+        const fieldName = pickerOption.dataset.pickerField;
+        const field = card?.querySelector(`[data-form-field="${fieldName}"]`);
+        if (!card || !fieldName || !field) return;
+        const payload = JSON.parse(pickerOption.dataset.pickerValue || "{}");
+        field.value = display(payload);
+        field.dataset.resolvedValue = JSON.stringify(payload);
+        if (fieldName === "visitObjectInfo" && (payload.objectType || payload.visitObjectType)) {
+          const selectedType = payload.objectType || payload.visitObjectType;
+          const form = card.querySelector(".plan-form-card");
+          if (form) form.dataset.objectType = selectedType;
+          const objectTypeField = card.querySelector('[data-form-field="visitObjectType"]');
+          if (objectTypeField) objectTypeField.value = selectedType;
+          card.querySelectorAll('[data-pill-group="visitObjectType"] .pill-option').forEach((item) => {
+            item.classList.toggle("active", item.dataset.pillValue === selectedType);
+          });
+        }
+        pickerOption.closest("[data-picker-list]")?.querySelectorAll(".picker-option").forEach((item) => item.classList.remove("active"));
+        pickerOption.classList.add("active");
+        card.querySelector(`[data-picker-list="${fieldName}"]`)?.classList.remove("open");
+        syncCreatePlanButton(card);
+        return;
+      }
+      const pickerInput = event.target.closest("[data-picker-input]");
+      if (pickerInput) {
+        const card = pickerInput.closest(".card");
+        const fieldName = pickerInput.dataset.pickerInput;
+        if (!card || !fieldName) return;
+        if (fieldName === "visitObjectInfo") {
+          scheduleCustomerSearch(pickerInput.value || "", card, true);
+          return;
+        }
+        if (fieldName !== "visitPurpose" && !pickerInput.value.trim()) {
+          card.querySelector(`[data-picker-list="${fieldName}"]`)?.classList.remove("open");
+          return;
+        }
+        card.querySelectorAll("[data-picker-list]").forEach((list) => {
+          list.classList.toggle("open", list.dataset.pickerList === fieldName);
+        });
+        return;
+      }
+      const submitInline = event.target.closest("[data-submit-inline]");
+      if (submitInline) {
+        const field = submitInline.closest(".card").querySelector("[data-inline-slot]");
+        if (!field.value.trim()) return;
+        const value = field.value.trim();
+        const displayText = field.type === "datetime-local"
+          ? `拜访时间：${value.replace("T", " ")}`
+          : value;
+        addMessage("user", displayText);
+        await callFlow("/api/visit/create/resolve", { sessionId: activeSessionId, conversationId: activeConversationId, slotName: field.dataset.inlineSlot, value, displayText });
+        return;
+      }
+      const submitForm = event.target.closest("[data-submit-form]");
+      if (submitForm) {
+        const formCard = submitForm.closest(".card");
+        const form = formCard.querySelector(".plan-form-card");
+        const slots = {};
+        formCard.querySelectorAll("[data-form-field]").forEach((field) => {
+          const value = getVisibleFieldValue(formCard, field.dataset.formField);
+          if (value) slots[field.dataset.formField] = value;
+        });
+        const displayText = form?.dataset.formMode === "edit" ? "保存计划修改信息" : "提交拜访计划信息";
+        addMessage("user", displayText);
+        await callFlow("/api/visit/create/resolve", { sessionId: activeSessionId, conversationId: activeConversationId, slots, displayText });
+        return;
+      }
+      const pill = event.target.closest("[data-pill-value]");
+      if (pill) {
+        const group = pill.closest("[data-pill-group]");
+        const fieldName = group?.dataset.pillGroup;
+        const card = pill.closest(".card");
+        const value = pill.dataset.pillValue || "";
+        if (!fieldName || !card) return;
+        group.querySelectorAll(".pill-option").forEach((item) => item.classList.remove("active"));
+        pill.classList.add("active");
+        const field = card.querySelector(`[data-form-field="${fieldName}"]`);
+        if (field) field.value = value;
+        const form = card.querySelector(".plan-form-card");
+        if (fieldName === "visitType" && form) form.dataset.visitType = value;
+        if (fieldName === "visitObjectType" && form) {
+          form.dataset.objectType = value;
+          const objectField = card.querySelector('[data-form-field="visitObjectInfo"]');
+          if (objectField) {
+            objectField.value = "";
+            delete objectField.dataset.resolvedValue;
+          }
+          card.querySelector('[data-picker-list="visitObjectInfo"]')?.classList.remove("open");
+          const customerField = card.querySelector('[data-form-field="customerType"]');
+          if (customerField && value !== "ad_customer" && value !== "store") customerField.value = "";
+          const targetField = card.querySelector('[data-form-field="adIsTarget"]');
+          if (targetField) targetField.value = "";
+          card.querySelectorAll('[data-pill-group="customerType"] .pill-option, [data-pill-group="adIsTarget"] .pill-option').forEach((item) => item.classList.remove("active"));
+        }
+        if (fieldName === "customerType" && form) {
+          form.dataset.customerType = value;
+          const targetField = card.querySelector('[data-form-field="adIsTarget"]');
+          if (targetField && value !== "new") targetField.value = "";
+          if (value !== "new") card.querySelectorAll('[data-pill-group="adIsTarget"] .pill-option').forEach((item) => item.classList.remove("active"));
+        }
+        if (fieldName === "adIsTarget" && field) {
+          field.value = value === "yes" ? "是" : "否";
+        }
+        syncCreatePlanButton(card);
+        return;
+      }
+	      const checkinPlan = event.target.closest("[data-checkin-plan]");
+	      if (checkinPlan) {
+	        const planId = checkinPlan.dataset.checkinPlan || "";
+	        if (!planId) return;
+	        addMessage("user", checkinPlan.querySelector("strong")?.textContent || "选择签到计划");
+	        await callFlow("/api/visit/checkin/resolve", {
+	          sessionId: activeSessionId,
+	          conversationId: activeConversationId,
+	          planId,
+	          location: currentLocation || defaultLocation(),
+	          displayText: "选择签到计划",
+	        });
+	        return;
+	      }
+	      const action = event.target.closest("[data-action]");
+	      const workflowPlan = event.target.closest("[data-workflow-plan]");
+	      if (workflowPlan) {
+	        const kind = workflowPlan.dataset.workflowKind;
+	        const planId = workflowPlan.dataset.workflowPlan;
+	        addMessage("user", workflowPlan.querySelector("strong")?.textContent || "选择拜访计划");
+	        if (kind === "cancel") await callFlow("/api/visit/plan/cancel", { conversationId: activeConversationId, planId });
+	        else await callFlow(`/api/visit/${kind}/start`, { conversationId: activeConversationId, planId, location: currentLocation || defaultLocation() });
+	        return;
+	      }
+	      if (action?.dataset.action === "confirm") {
+	        addMessage("user", action.dataset.actionLabel || "确认创建");
+	        await callFlow("/api/visit/create/confirm", { sessionId: activeSessionId, conversationId: activeConversationId });
+	        return;
+	      }
+	      if (action?.dataset.action === "start-create") {
+	        await startCreate("创建拜访计划");
+	        return;
+	      }
+	      if (action?.dataset.action === "enable-location") {
+	        currentLocation = defaultLocation();
+	        addMessage("user", "已开启定位");
+	        await callFlow("/api/visit/checkin/resolve", {
+	          sessionId: activeSessionId,
+	          conversationId: activeConversationId,
+	          location: currentLocation,
+	          displayText: "已开启定位",
+	        });
+	        return;
+	      }
+	      if (action?.dataset.action === "switch-plan") {
+	        await callFlow("/api/visit/checkin/resolve", {
+	          sessionId: activeSessionId,
+	          conversationId: activeConversationId,
+	          location: currentLocation || defaultLocation(),
+	          displayText: "切换签到计划",
+	        });
+	        return;
+	      }
+	      if (action?.dataset.action === "photo-check-in") {
+	        const planId = action.dataset.planId || "";
+	        if (!planId) return;
+	        addMessage("user", "拍照签到");
+	        await callFlow("/api/visit/checkin/submit", {
+	          sessionId: activeSessionId,
+	          conversationId: activeConversationId,
+	          planId,
+	          location: currentLocation || defaultLocation(),
+	        });
+	        return;
+	      }
+	      if (action?.dataset.action === "record-log") {
+	        const response = await callFlow("/api/visit/recording/start", { conversationId: activeConversationId, planId: action.dataset.planId });
+	        const recordingId = response?.card?.data?.recordingId || response?.card?.data?.id;
+	        if (recordingId) {
+	          try { await startVisitAudio(recordingId); }
+	          catch (error) { addMessage("assistant", `录音启动失败：${error.message || "无法访问麦克风"}`); }
+	        }
+	        return;
+	      }
+	      if (action?.dataset.action === "checkout-precheck") {
+	        await callFlow("/api/visit/checkout/precheck", { sessionId: activeSessionId, conversationId: activeConversationId, planId: action.dataset.planId, location: currentLocation || defaultLocation() });
+	        return;
+	      }
+	      if (action?.dataset.action === "checkout-submit") {
+	        await callFlow("/api/visit/checkout/submit", { sessionId: activeSessionId, conversationId: activeConversationId, planId: action.dataset.planId, location: currentLocation || defaultLocation() });
+	        return;
+	      }
+	      if (action?.dataset.action === "checkout-supplement") {
+	        await callFlow("/api/visit/checkout/supplement", { conversationId: activeConversationId, planId: action.dataset.planId });
+	        return;
+	      }
+	      if (action?.dataset.action === "log-start-plan") {
+	        await callFlow("/api/visit/log/start", { conversationId: activeConversationId, planId: action.dataset.planId });
+	        return;
+	      }
+	      if (action?.dataset.action === "log-submit") {
+	        const form = action.closest("[data-log-form]");
+	        const name = form?.querySelector("[data-log-contact-name]")?.value.trim() || "";
+	        const phone = form?.querySelector("[data-log-contact-phone]")?.value.trim() || "";
+	        const visitSummary = form?.querySelector("[data-log-summary]")?.value.trim() || "";
+	        if (!name || !visitSummary) { addMessage("assistant", "请填写联系人和拜访纪要。"); return; }
+	        await callFlow("/api/visit/log/submit", { sessionId: activeSessionId, conversationId: activeConversationId, contacts: [{ name, phone, isKp: 1 }], visitSummary });
+	        return;
+	      }
+	      if (action?.dataset.action === "recording-stop") {
+	        const section = action.closest("[data-recording-id]");
+	        const recordingId = section?.dataset.recordingId;
+	        action.disabled = true; action.textContent = "正在上传录音…";
+	        try {
+	          const audioUrl = await finishVisitAudio(recordingId);
+	          if (!audioUrl) throw new Error("未找到正在进行的录音");
+	          await callFlow("/api/visit/recording/stop", { sessionId: activeSessionId, conversationId: activeConversationId, recordingId, audioUrl });
+	        } catch (error) {
+	          action.disabled = false; action.textContent = "停止录音并生成纪要";
+	          addMessage("assistant", `录音上传失败：${error.message}`);
+	        }
+	        return;
+	      }
+	      if (action?.dataset.action === "review-submit") {
+	        await callFlow("/api/visit/review/submit", { conversationId: activeConversationId, planId: action.dataset.planId });
+	        return;
+	      }
+	      if (action?.dataset.action === "restart") {
+        addMessage("user", "重新填写");
+        await callFlow("/api/visit/create/reset", { sessionId: activeSessionId, conversationId: activeConversationId });
+        return;
+      }
+      if (action?.dataset.action === "edit-plan") {
+        const planId = action.dataset.planId || "";
+        if (!planId) return;
+        addMessage("user", "修改计划");
+        await callFlow("/api/visit/plan/edit", { planId, conversationId: activeConversationId });
+        return;
+      }
+      const openConversation = event.target.closest("[data-open-conversation]");
+      if (openConversation) {
+        await openVisitConversation(openConversation.dataset.openConversation);
+        return;
+      }
+    });
+
+    $("#sendBtn").addEventListener("click", async () => {
+	      const text = input.value.trim();
+	      input.value = "";
+	      if (!text) return;
+	      if (looksLikeCancel(text)) await startCancel(text);
+	      else if (looksLikeCheckout(text)) await startCheckout(text);
+	      else if (looksLikeLog(text)) await startLog(text);
+	      else if (looksLikeCheckin(text)) await startCheckin(text);
+	      else if (looksLikeCreateRequest(text)) await startCreate(text);
+	      else if (!activeSessionId) await startCreate(text);
+	      else await sendText(text);
+	    });
+    $("#voiceBtn").addEventListener("click", async () => {
+      if (realtimeInput) await stopRealtimeInput(true);
+      else await startRealtimeInput();
+    });
+    $("#resetBtn").addEventListener("click", async () => {
+      await callFlow("/api/visit/create/reset", { sessionId: activeSessionId, conversationId: activeConversationId });
+    });
+    $("#newConversationBtn").addEventListener("click", async () => {
+      await startBlankConversation();
+    });
+    $("#historyBtn").addEventListener("click", async () => {
+      await refreshHistory();
+      historyPanel?.classList.toggle("open");
+    });
+    $("#closeHistoryBtn").addEventListener("click", () => {
+      historyPanel?.classList.remove("open");
+    });
+    $("#backBtn").addEventListener("click", () => {
+      location.href = "/";
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) $("#sendBtn").click();
+    });
+    document.addEventListener("input", (event) => {
+      const field = event.target.closest("[data-form-field]");
+      if (!field) return;
+      const card = field.closest(".card");
+      if (!card) return;
+      delete field.dataset.resolvedValue;
+      if (field.dataset.pickerInput === "visitObjectInfo") {
+        scheduleCustomerSearch(field.value.trim(), card);
+      }
+      if (field.dataset.pickerInput === "planVisitAddress") {
+        const list = card.querySelector('[data-picker-list="planVisitAddress"]');
+        if (list) {
+          const query = field.value.trim();
+          list.innerHTML = renderAddressOptions(query);
+          list.classList.toggle("open", Boolean(query));
+        }
+      }
+      syncCreatePlanButton(card);
+    });
+
+    function readResolvedValue(field) {
+      if (!field?.dataset?.resolvedValue) return null;
+      try {
+        return JSON.parse(field.dataset.resolvedValue);
+      } catch {
+        return null;
+      }
+    }
+
+    function syncCreatePlanButton(card) {
+      const button = card.querySelector(".create-plan-btn");
+      if (!button) return;
+      const form = card.querySelector(".plan-form-card");
+      const visitType = form?.dataset.visitType || "";
+      const objectType = form?.dataset.objectType || "";
+      const customerType = form?.dataset.customerType || "";
+      const required = ["visitType", "visitObjectType", "visitObjectInfo", "visitPurpose", "planVisitTime", "planVisitAddress"];
+      if (visitType === "travel") required.push("travelApplyNo");
+      if (objectType === "ad_customer" || objectType === "store") required.push("customerType");
+      if (objectType === "ad_customer" && customerType === "new") required.push("adIsTarget");
+      const ready = required.every((name) => getVisibleFieldValue(card, name));
+      button.classList.toggle("ready", ready);
+      button.disabled = !ready;
+    }
+
+    function getVisibleFieldValue(card, name) {
+      const fields = Array.from(card.querySelectorAll(`[data-form-field="${name}"]`));
+      for (const field of fields) {
+        if (field.hidden) {
+          if (field.dataset.resolvedValue) return JSON.parse(field.dataset.resolvedValue);
+          if (field.value?.trim()) return field.value.trim();
+          continue;
+        }
+        const group = field.closest(".plan-field-group");
+        const isHiddenByRule = group && getComputedStyle(group).display === "none";
+        if (!isHiddenByRule && field.dataset.resolvedValue) return JSON.parse(field.dataset.resolvedValue);
+        if (!isHiddenByRule && field.value?.trim()) return field.value.trim();
+      }
+      return "";
+    }
+
+    api("/api/auth/me")
+      .then((data) => {
+        $("#userLine").textContent = "内容由 AI 生成，仅供参考";
+        return api("/api/visit/bootstrap");
+      })
+      .then((data) => {
+        visitBootstrap = {
+          licenses: data.licenses || [],
+          purposes: data.purposes || [],
+          addresses: data.addresses || [],
+          travelApplications: data.travelApplications || [],
+        };
+        refreshPickers();
+        if (data.activeSession && data.activeSession.fsmState !== "DONE") {
+          activeSessionId = data.activeSession.id;
+          activeConversationId = data.activeSession.conversationId || "";
+          flowHint.textContent = `已恢复未完成流程：${data.activeSession.fsmState}`;
+        }
+        return refreshHistory();
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "拜访服务初始化失败";
+        const loginRequired = message.includes("登录");
+        $("#userLine").textContent = loginRequired ? "请先登录 New-Agent" : "Spring Boot 拜访服务不可用";
+        stateChip.textContent = loginRequired ? "未登录" : "连接失败";
+        addMessage("assistant", message);
+      });
+  </script>
+</body>
+</html>

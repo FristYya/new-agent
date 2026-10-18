@@ -71,6 +71,10 @@ npm start
 
 浏览器访问 `http://localhost:3100`。存活和就绪检查地址分别为 `http://localhost:3100/health/live` 与 `http://localhost:3100/health/ready`。
 
+拜访助手联调时，先启动 `locallife-vist` Spring Boot 服务，再登录 New-Agent 并访问
+`http://localhost:3100/assistant/chat`。New-Agent 会将同源 `/api/visit/*` 请求代理到
+`VISIT_API_BASE_URL`（默认 `http://127.0.0.1:8080`），并把已登录用户的 ID 注入 Spring Boot。
+
 正式部署需设置 `NODE_ENV=production`；服务会在存储、数据库密码、Cookie 密钥或 Secure
 Cookie 仍为开发配置时拒绝启动，具体要求见 `docs/production-runtime.md`。
 

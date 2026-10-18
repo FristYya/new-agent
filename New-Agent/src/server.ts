@@ -78,6 +78,10 @@ import {
   type SkillRecord,
   type ToolRecord,
 } from "./store.ts";
+import {
+  forwardVisitRequest,
+  VisitProxyError,
+} from "./visit-api-proxy.ts";
 
 // 第三节开放完整 Pi 内置 Tool。
 // 是否允许执行由 Agent 配置与 guard 安全策略共同决定。
@@ -465,8 +469,16 @@ function asyncRoute(handler: AsyncHandler): express.RequestHandler {
 }
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "64kb" }));
+// 录音以 16 kHz WAV 的 Base64 形式同源转发到 Spring Boot；50 MiB 原始音频
+// 约占 67 MiB JSON，限制在 72 MiB，避免无限制请求体占用内存。
+app.use(express.json({ limit: "72mb" }));
 app.use(express.static("public"));
+
+// 拜访智能助手采用独立的移动端页面。保留成品中的语义化入口，
+// 同时 public 静态目录仍允许通过 /visit-assistant.html 直接访问。
+app.get("/assistant/chat", (_request, response) => {
+  response.sendFile(path.join(process.cwd(), "public", "visit-assistant.html"));
+});
 
 // Liveness only proves that the event loop can answer; it must not depend on MySQL.
 app.get("/health/live", (_request, response) => {
@@ -793,6 +805,34 @@ app.use((request, response, next) => {
   response.locals.runtime = runtimeRegistry.getRuntime(user);
   next();
 });
+
+// 移动端页面保持访问 New-Agent 同源地址；这里将拜访请求代理到
+// Spring Boot，并用已验证的登录用户覆盖任何客户端 X-User-Id。
+app.use("/api/visit", asyncRoute(async (request, response) => {
+  const user = requestUser(response);
+  try {
+    const upstream = await forwardVisitRequest({
+      baseUrl: runtimeConfig.visitApiBaseUrl,
+      timeoutMs: runtimeConfig.visitApiTimeoutMs,
+      userId: user.id,
+      method: request.method,
+      originalUrl: request.originalUrl,
+      body: request.body,
+    });
+    response.status(upstream.status);
+    response.setHeader("Content-Type", upstream.contentType);
+    response.setHeader("Cache-Control", "no-store");
+    response.send(Buffer.from(upstream.body));
+  } catch (error) {
+    if (error instanceof VisitProxyError) {
+      return response.status(error.statusCode).json({
+        error: error.message,
+        code: error.statusCode === 504 ? "VISIT_API_TIMEOUT" : "VISIT_API_UNAVAILABLE",
+      });
+    }
+    throw error;
+  }
+}));
 
 // 返回管理页面状态，并附带 Pi 当前真实加载的 Skill/Tool 信息。
 app.get("/api/state", async (_request, response) => {

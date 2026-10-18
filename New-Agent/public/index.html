@@ -879,6 +879,58 @@
       padding-left: 10px;
       color: var(--muted);
     }
+    .visit-protocol-card {
+      min-width: min(520px, 72vw);
+      margin: 8px 0;
+      border: 1px solid #cfe2d8;
+      border-radius: 12px;
+      background: linear-gradient(145deg, #fbfffc, #f0f7f3);
+      overflow: hidden;
+    }
+    .visit-protocol-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      border-bottom: 1px solid #dcebe3;
+    }
+    .visit-protocol-head b { color: #204f40; }
+    .visit-protocol-head span,
+    .visit-protocol-action {
+      border: 1px solid #cfe2d8;
+      border-radius: 999px;
+      background: #fff;
+      color: #4f6e63;
+      padding: 3px 8px;
+      font-size: 11px;
+    }
+    .visit-protocol-body { padding: 11px 13px; }
+    .visit-protocol-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .visit-protocol-field {
+      display: grid;
+      gap: 3px;
+      border-radius: 8px;
+      background: rgb(255 255 255 / 75%);
+      padding: 8px 9px;
+    }
+    .visit-protocol-field span { color: var(--muted); font-size: 11px; }
+    .visit-protocol-field b { overflow-wrap: anywhere; font-size: 13px; }
+    .visit-protocol-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+    .visit-protocol-details { margin-top: 9px; color: var(--muted); font-size: 12px; }
+    .visit-protocol-details pre { max-height: 240px; white-space: pre-wrap; }
+    .visit-protocol-error {
+      margin: 8px 0;
+      border: 1px solid #edc9c2;
+      border-radius: 9px;
+      background: #fff8f6;
+      color: #9a4438;
+      padding: 9px 11px;
+    }
     .thinking {
       max-width: 82%;
       border: 1px solid var(--thinking-line);
@@ -4057,6 +4109,111 @@
       return blocks.join("");
     }
 
+    const VISIT_PROTOCOL_START = "<<<VISIT_BLOCK_V1>>>";
+    const VISIT_PROTOCOL_END = "<<<END_VISIT_BLOCK_V1>>>";
+    const VISIT_PROTOCOL_VERSION = "visit.session.v1";
+    const VISIT_CARD_TITLES = {
+      "visit-plan-card": "拜访计划",
+      "visit-plan-result-card": "拜访计划列表",
+      "visit-pending-card": "待办事项",
+      "visit-check-card": "拜访签到 / 签退",
+      "check-in-summary-card": "签到结果",
+      "visit-log-card": "拜访日志",
+      "edit-visit-log-card": "修改拜访日志",
+      "confirm-edit-visit-log-card": "确认日志修改",
+      "visit-log-completed-card": "拜访日志已完成",
+      "visit-summary-card": "拜访总结",
+      "cancel-visit-plan-card": "取消拜访计划",
+      "visit-plan-cancelled-card": "拜访计划已取消",
+      "enable-location-card": "开启位置权限",
+    };
+
+    function visitProtocolValue(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      if (Array.isArray(value)) return `${value.length} 项`;
+      if (typeof value === "object") {
+        return value.displayName || value.label || value.name || value.address
+          || value.licenseName || `${Object.keys(value).length} 个字段`;
+      }
+      if (typeof value === "boolean") return value ? "是" : "否";
+      return String(value);
+    }
+
+    function renderVisitProtocolCard(payload) {
+      if (payload?.protocol !== VISIT_PROTOCOL_VERSION) {
+        return `<div class="visit-protocol-error">无法解析拜访卡片：协议版本不受支持。</div>`;
+      }
+
+      if (payload.type === "a2ui.action_result") {
+        const result = payload.skill_result || {};
+        const title = result.success === false ? "拜访操作失败" : "拜访操作结果";
+        const message = result.message || payload.action_id || "操作已处理";
+        return `<section class="visit-protocol-card">
+          <div class="visit-protocol-head"><b>${escapeHtml(title)}</b><span>VISIT</span></div>
+          <div class="visit-protocol-body"><p>${escapeHtml(message)}</p></div>
+        </section>`;
+      }
+
+      if (payload.type !== "a2ui.render" || !payload.card || typeof payload.card !== "object") {
+        return `<div class="visit-protocol-error">无法解析拜访卡片：消息类型或 card 字段不合法。</div>`;
+      }
+
+      const card = payload.card;
+      const data = card.data && typeof card.data === "object" ? card.data : {};
+      const title = VISIT_CARD_TITLES[card.card_name] || card.card_name || "拜访业务卡片";
+      const fields = Object.entries(data)
+        .filter(([, value]) => value !== null && value !== undefined && value !== "")
+        .slice(0, 8)
+        .map(([key, value]) => `<div class="visit-protocol-field"><span>${escapeHtml(key)}</span><b>${escapeHtml(visitProtocolValue(value))}</b></div>`)
+        .join("");
+      const enabledActions = Object.entries(card.action_states || {})
+        .filter(([, state]) => state?.visible !== false)
+        .map(([name]) => `<span class="visit-protocol-action">${escapeHtml(name)}</span>`)
+        .join("");
+
+      return `<section class="visit-protocol-card" data-visit-card="${escapeHtml(card.card_name || "")}">
+        <div class="visit-protocol-head"><b>${escapeHtml(title)}</b><span>VISIT · ${escapeHtml(card.schema_version || "1.0")}</span></div>
+        <div class="visit-protocol-body">
+          ${fields ? `<div class="visit-protocol-grid">${fields}</div>` : `<p class="muted">卡片暂无可展示数据。</p>`}
+          ${enabledActions ? `<div class="visit-protocol-actions">${enabledActions}</div>` : ""}
+          <details class="visit-protocol-details"><summary>查看完整卡片数据</summary><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>
+        </div>
+      </section>`;
+    }
+
+    function renderAssistantContent(source) {
+      const text = String(source ?? "");
+      let cursor = 0;
+      let html = "";
+
+      while (cursor < text.length) {
+        const start = text.indexOf(VISIT_PROTOCOL_START, cursor);
+        if (start < 0) {
+          html += renderMarkdown(text.slice(cursor));
+          break;
+        }
+
+        html += renderMarkdown(text.slice(cursor, start));
+        const bodyStart = start + VISIT_PROTOCOL_START.length;
+        const end = text.indexOf(VISIT_PROTOCOL_END, bodyStart);
+        if (end < 0) {
+          // SSE 可能把一个协议块拆成多段；边界未闭合时先显示接收状态，
+          // 下一段到达后 setBubbleContent 会用完整文本重新渲染。
+          html += `<div class="visit-protocol-card"><div class="visit-protocol-body">正在接收拜访卡片…</div></div>`;
+          break;
+        }
+
+        try {
+          html += renderVisitProtocolCard(JSON.parse(text.slice(bodyStart, end)));
+        } catch {
+          html += `<div class="visit-protocol-error">拜访卡片 JSON 不合法，无法渲染。</div>`;
+        }
+        cursor = end + VISIT_PROTOCOL_END.length;
+      }
+
+      return html;
+    }
+
     function scrollChatToBottom() {
       requestAnimationFrame(() => {
         chatScroll.scrollTop = chatScroll.scrollHeight;
@@ -4067,7 +4224,8 @@
       bubble.dataset.raw = text;
       if (bubble.dataset.role === "assistant" || bubble.closest(".message")?.classList.contains("assistant")) {
         bubble.classList.add("markdown");
-        bubble.innerHTML = renderMarkdown(text);
+        // 助手消息既可能是普通 Markdown，也可能夹带一个或多个 VISIT 卡片协议块。
+        bubble.innerHTML = renderAssistantContent(text);
       } else {
         bubble.textContent = text;
       }
